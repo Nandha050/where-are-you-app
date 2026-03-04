@@ -1,9 +1,10 @@
-import { Redirect, Tabs } from "expo-router";
+import { Redirect, Tabs, useSegments } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import { useAuth } from "../../hooks/useAuth";
 
 export default function DriverLayout() {
   const { isHydrated, isAuthenticated, user } = useAuth();
+  const segments = useSegments();
 
   if (!isHydrated) {
     return (
@@ -13,11 +14,16 @@ export default function DriverLayout() {
     );
   }
 
-  if (!isAuthenticated) {
+  // Allow the login screen to render without authentication.
+  // Without this check the layout redirects to /(driver)/login,
+  // which is inside this group, creating an infinite redirect loop.
+  const isLoginRoute = segments[segments.length - 1] === "login";
+
+  if (!isAuthenticated && !isLoginRoute) {
     return <Redirect href="/(driver)/login" />;
   }
 
-  if (user?.role !== "driver") {
+  if (isAuthenticated && user?.role !== "driver") {
     return <Redirect href="/(user)/home" />;
   }
 

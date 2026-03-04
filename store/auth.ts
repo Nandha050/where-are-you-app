@@ -1,5 +1,5 @@
 import * as SecureStore from "expo-secure-store";
-import { makeAutoObservable } from "mobx";
+import { makeAutoObservable, runInAction } from "mobx";
 import { Platform } from "react-native";
 
 export interface User {
@@ -56,19 +56,19 @@ class AuthStore {
       const token = await this.getItem("authToken");
       const rawUser = await this.getItem("authUser");
 
-      if (token) {
-        this.token = token;
-      }
-
-      if (rawUser) {
-        this.user = JSON.parse(rawUser) as User;
-      }
+      // Batch all mutations so MobX fires only ONE notification
+      runInAction(() => {
+        if (token) this.token = token;
+        if (rawUser) this.user = JSON.parse(rawUser) as User;
+        this.isHydrated = true;
+      });
     } catch (error) {
       console.error("Error initializing auth:", error);
-      this.token = null;
-      this.user = null;
-    } finally {
-      this.isHydrated = true;
+      runInAction(() => {
+        this.token = null;
+        this.user = null;
+        this.isHydrated = true;
+      });
     }
   }
 
