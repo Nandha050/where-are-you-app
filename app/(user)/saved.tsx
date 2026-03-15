@@ -55,6 +55,7 @@ export default function SavedBusesScreen() {
                     busId: item.busId,
                     plate: item.bus?.numberPlate,
                     route: item.bus?.routeName,
+                    routeId: item.bus?.routeId,
                   },
                 } as any)
               }

@@ -35,6 +35,9 @@ export interface DriverStop {
   name?: string;
   lat?: number;
   lng?: number;
+  latitude?: number;
+  longitude?: number;
+  sequenceOrder?: number;
 }
 
 export interface DriverMyRouteResponse {
@@ -49,6 +52,7 @@ export interface BusSearchResult {
   busId: string;
   numberPlate: string;
   routeName: string;
+  routeId?: string;
   isActive: boolean;
 }
 
@@ -56,13 +60,31 @@ export interface BusLiveStatus {
   busId: string;
   numberPlate: string;
   routeName: string;
+  routeId?: string;
   encodedPolyline: string;
+  routeStartLat?: number | null;
+  routeStartLng?: number | null;
+  routeEndLat?: number | null;
+  routeEndLng?: number | null;
   stops: DriverStop[];
   currentLat: number | null;
   currentLng: number | null;
   nextStop: string | null;
   estimatedArrival: string | null;
+  trackingStatus?: string | null;
+  lastUpdated?: string | null;
   isActive: boolean;
+}
+
+export interface AdminRoute {
+  id: string;
+  name: string;
+  encodedPolyline: string;
+  totalDistanceMeters: number;
+  estimatedDurationSeconds: number;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface UserSubscriptionRequest {
@@ -88,6 +110,7 @@ export interface UserSubscription {
     id?: string;
     numberPlate?: string;
     routeName?: string;
+    routeId?: string;
   };
   stop?: {
     id?: string;

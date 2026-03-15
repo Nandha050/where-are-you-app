@@ -4,19 +4,19 @@ import * as Location from "expo-location";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    ScrollView,
-    Text,
-    View,
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { API_BASE_URL } from "../../api/client";
 import { BusLiveStatus, DriverStop } from "../../api/types";
 import {
-    createUserSubscription,
-    getUserBusLive,
-    getUserSubscriptions,
+  createUserSubscription,
+  getUserBusLive,
+  getUserSubscriptions,
 } from "../../api/user";
 import RouteMap from "../../components/RouteMap";
 import socketService from "../../sockets/socketService";
@@ -25,6 +25,77 @@ import authStore from "../../store/auth";
 type Coord = {
   latitude: number;
   longitude: number;
+};
+
+type StopStatus = "passed" | "next" | "upcoming";
+
+type OrderedStop = {
+  id?: string;
+  name?: string;
+  latitude: number;
+  longitude: number;
+  sequenceOrder?: number;
+};
+
+const toStopCoord = (stop: DriverStop): OrderedStop | null => {
+  const latitude =
+    typeof stop.lat === "number"
+      ? stop.lat
+      : typeof stop.latitude === "number"
+        ? stop.latitude
+        : null;
+  const longitude =
+    typeof stop.lng === "number"
+      ? stop.lng
+      : typeof stop.longitude === "number"
+        ? stop.longitude
+        : null;
+
+  if (latitude == null || longitude == null) {
+    return null;
+  }
+
+  return {
+    id: stop.id,
+    name: stop.name,
+    latitude,
+    longitude,
+    sequenceOrder: stop.sequenceOrder,
+  };
+};
+
+const sameCoord = (a: Coord, b: Coord) =>
+  Math.abs(a.latitude - b.latitude) < 1e-6 &&
+  Math.abs(a.longitude - b.longitude) < 1e-6;
+
+const buildFallbackPath = (
+  start: Coord | null,
+  orderedStops: OrderedStop[],
+  end: Coord | null,
+): Coord[] => {
+  const points: Coord[] = [];
+
+  if (start) {
+    points.push(start);
+  }
+
+  orderedStops.forEach((stop) => {
+    points.push({ latitude: stop.latitude, longitude: stop.longitude });
+  });
+
+  if (end) {
+    points.push(end);
+  }
+
+  const deduped: Coord[] = [];
+  points.forEach((point) => {
+    const prev = deduped[deduped.length - 1];
+    if (!prev || !sameCoord(prev, point)) {
+      deduped.push(point);
+    }
+  });
+
+  return deduped;
 };
 
 export default function UserTrackingScreen() {
@@ -40,11 +111,64 @@ export default function UserTrackingScreen() {
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<BusLiveStatus | null>(null);
   const [path, setPath] = useState<Coord[]>([]);
+  const [routeEncodedPolyline, setRouteEncodedPolyline] = useState("");
   const [currentLocation, setCurrentLocation] = useState<Coord | null>(null);
   const [submittingSubscription, setSubmittingSubscription] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
 
-  const normalizedStops = useMemo(() => live?.stops ?? [], [live?.stops]);
+  const orderedStops = useMemo<OrderedStop[]>(() => {
+    return (live?.stops ?? [])
+      .map((stop) => toStopCoord(stop))
+      .filter((stop): stop is OrderedStop => Boolean(stop))
+      .sort((a, b) => {
+        const aOrder = a.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+        const bOrder = b.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+        return aOrder - bOrder;
+      });
+  }, [live?.stops]);
+
+  const stopsWithStatus = useMemo<(OrderedStop & { status: StopStatus })[]>(() => {
+    if (!orderedStops.length) return [];
+
+    const normalizedNextStop = live?.nextStop?.trim().toLowerCase();
+    let nextStopIndex = normalizedNextStop
+      ? orderedStops.findIndex(
+        (stop) => stop.name?.trim().toLowerCase() === normalizedNextStop,
+      )
+      : -1;
+
+    if (nextStopIndex < 0 && currentLocation) {
+      let bestDistance = Number.POSITIVE_INFINITY;
+      let bestIndex = 0;
+
+      orderedStops.forEach((stop, index) => {
+        const dLat = stop.latitude - currentLocation.latitude;
+        const dLng = stop.longitude - currentLocation.longitude;
+        const distanceSq = dLat * dLat + dLng * dLng;
+
+        if (distanceSq < bestDistance) {
+          bestDistance = distanceSq;
+          bestIndex = index;
+        }
+      });
+
+      nextStopIndex = bestIndex;
+    }
+
+    if (nextStopIndex < 0) {
+      nextStopIndex = 0;
+    }
+
+    return orderedStops.map((stop, index) => ({
+      ...stop,
+      status:
+        index < nextStopIndex
+          ? "passed"
+          : index === nextStopIndex
+            ? "next"
+            : "upcoming",
+    }));
+  }, [orderedStops, live?.nextStop, currentLocation]);
 
   useEffect(() => {
     if (!busId) {
@@ -74,20 +198,51 @@ export default function UserTrackingScreen() {
           });
         }
 
-        if (liveData.encodedPolyline) {
-          const decoded = polyline.decode(liveData.encodedPolyline) as [
+        let encodedPolyline = liveData.encodedPolyline;
+
+        const orderedStopsFromLive = (liveData.stops ?? [])
+          .map((stop) => toStopCoord(stop))
+          .filter((stop): stop is OrderedStop => Boolean(stop))
+          .sort((a, b) => {
+            const aOrder = a.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+            const bOrder = b.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+            return aOrder - bOrder;
+          });
+
+        if (encodedPolyline) {
+          setRouteEncodedPolyline(encodedPolyline);
+          const decoded = polyline.decode(encodedPolyline) as [
             number,
             number,
           ][];
           setPath(
             decoded.map(([latitude, longitude]) => ({ latitude, longitude })),
           );
+        } else {
+          setRouteEncodedPolyline("");
+
+          const start =
+            liveData.routeStartLat != null && liveData.routeStartLng != null
+              ? {
+                latitude: liveData.routeStartLat,
+                longitude: liveData.routeStartLng,
+              }
+              : null;
+          const end =
+            liveData.routeEndLat != null && liveData.routeEndLng != null
+              ? {
+                latitude: liveData.routeEndLat,
+                longitude: liveData.routeEndLng,
+              }
+              : null;
+
+          setPath(buildFallbackPath(start, orderedStopsFromLive, end));
         }
       } catch (err: any) {
         setError(
           err?.response?.data?.message ??
-            err?.message ??
-            "Failed to load live bus",
+          err?.message ??
+          "Failed to load live bus",
         );
       } finally {
         setLoading(false);
@@ -154,12 +309,12 @@ export default function UserTrackingScreen() {
       setLive((prev) =>
         prev
           ? {
-              ...prev,
-              currentLat: latitude ?? prev.currentLat,
-              currentLng: longitude ?? prev.currentLng,
-              nextStop: event.nextStop ?? prev.nextStop,
-              estimatedArrival: event.estimatedArrival ?? prev.estimatedArrival,
-            }
+            ...prev,
+            currentLat: latitude ?? prev.currentLat,
+            currentLng: longitude ?? prev.currentLng,
+            nextStop: event.nextStop ?? prev.nextStop,
+            estimatedArrival: event.estimatedArrival ?? prev.estimatedArrival,
+          }
           : prev,
       );
     };
@@ -262,18 +417,21 @@ export default function UserTrackingScreen() {
         {path.length > 1 ? (
           <RouteMap
             coordinates={path}
+            encodedPolyline={routeEncodedPolyline || undefined}
             currentLocation={currentLocation ?? undefined}
-            stops={normalizedStops
-              .filter((stop) => stop.lat != null && stop.lng != null)
-              .map((stop) => ({
-                latitude: stop.lat!,
-                longitude: stop.lng!,
-                name: stop.name,
-              }))}
+            stops={stopsWithStatus.map((stop) => ({
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+              name: stop.name,
+              status: stop.status,
+              sequenceOrder: stop.sequenceOrder,
+            }))}
           />
         ) : (
           <View className="flex-1 items-center justify-center bg-slate-200">
-            <Text className="text-sm text-slate-500">Map unavailable</Text>
+            <Text className="text-sm text-slate-500">
+              Route unavailable for this bus
+            </Text>
           </View>
         )}
 
@@ -320,9 +478,8 @@ export default function UserTrackingScreen() {
           <View className="mt-3 flex-row items-center justify-between">
             <Text className="text-xs text-slate-600">Next: {nextStop}</Text>
             <Pressable
-              className={`rounded-full px-3 py-1.5 flex-row items-center gap-1.5 ${
-                isSubscribed ? "bg-emerald-100" : "bg-[#E3EBFF]"
-              }`}
+              className={`rounded-full px-3 py-1.5 flex-row items-center gap-1.5 ${isSubscribed ? "bg-emerald-100" : "bg-[#E3EBFF]"
+                }`}
               onPress={subscribeForAlerts}
               disabled={submittingSubscription || isSubscribed}
             >
@@ -338,9 +495,8 @@ export default function UserTrackingScreen() {
                     color={isSubscribed ? "#15803D" : "#1847BA"}
                   />
                   <Text
-                    className={`text-[11px] font-bold ${
-                      isSubscribed ? "text-emerald-700" : "text-[#1847BA]"
-                    }`}
+                    className={`text-[11px] font-bold ${isSubscribed ? "text-emerald-700" : "text-[#1847BA]"
+                      }`}
                   >
                     {isSubscribed ? "Subscribed" : "Subscribe"}
                   </Text>
@@ -357,53 +513,51 @@ export default function UserTrackingScreen() {
           </Text>
 
           <View className="px-4 py-4">
-            {normalizedStops.length === 0 ? (
+            {stopsWithStatus.length === 0 ? (
               <Text className="text-sm text-slate-500">
                 No stop data available
               </Text>
             ) : (
-              normalizedStops.slice(0, 3).map((stop: DriverStop, index) => {
-                const isNext = stop.name === live?.nextStop || index === 1;
-                const isPassed = index === 0;
+              stopsWithStatus.map((stop, index) => {
+                const isNext = stop.status === "next";
+                const isPassed = stop.status === "passed";
 
                 return (
                   <View
-                    key={stop.id ?? `${stop.name ?? "stop"}-${index}`}
+                    key={stop.id ?? `${stop.name ?? "stop"}-${index}-${stop.sequenceOrder ?? "na"}`}
                     className="flex-row mb-3"
                   >
                     <View className="mr-3 items-center" style={{ width: 16 }}>
                       <View
-                        className={`h-3.5 w-3.5 rounded-full border-2 ${
-                          isNext
-                            ? "border-[#1847BA] bg-[#1847BA]"
-                            : isPassed
-                              ? "border-emerald-500 bg-emerald-500"
-                              : "border-slate-300 bg-white"
-                        }`}
+                        className={`h-3.5 w-3.5 rounded-full border-2 ${isNext
+                          ? "border-[#1847BA] bg-[#1847BA]"
+                          : isPassed
+                            ? "border-emerald-500 bg-emerald-500"
+                            : "border-slate-300 bg-white"
+                          }`}
                       />
-                      {index < Math.min(normalizedStops.length, 3) - 1 && (
+                      {index < stopsWithStatus.length - 1 && (
                         <View className="mt-1 w-0.5 h-10 bg-slate-200" />
                       )}
                     </View>
 
                     <View className="flex-1">
                       <Text
-                        className={`text-sm ${
-                          isNext
-                            ? "font-extrabold text-slate-900"
-                            : "text-slate-600"
-                        }`}
+                        className={`text-sm ${isNext
+                          ? "font-extrabold text-slate-900"
+                          : "text-slate-600"
+                          }`}
                       >
-                        {stop.name ?? `Stop ${index + 1}`}
+                        {(stop.sequenceOrder != null ? `${stop.sequenceOrder}. ` : "") +
+                          (stop.name ?? `Stop ${index + 1}`)}
                       </Text>
                       <Text
-                        className={`text-xs ${
-                          isNext
-                            ? "font-semibold text-[#1847BA]"
-                            : isPassed
-                              ? "text-slate-400"
-                              : "text-slate-500"
-                        }`}
+                        className={`text-xs ${isNext
+                          ? "font-semibold text-[#1847BA]"
+                          : isPassed
+                            ? "text-slate-400"
+                            : "text-slate-500"
+                          }`}
                       >
                         {isNext
                           ? "Next Stop"

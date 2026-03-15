@@ -1,10 +1,12 @@
 import apiClient from "./client";
 import {
-    BusLiveStatus,
-    BusSearchResult,
-    UserNotification,
-    UserSubscription,
-    UserSubscriptionRequest,
+  AdminRoute,
+  BusLiveStatus,
+  BusSearchResult,
+  DriverStop,
+  UserNotification,
+  UserSubscription,
+  UserSubscriptionRequest,
 } from "./types";
 
 const unwrap = <T>(data: T | { data?: T } | { result?: T }): T => {
@@ -38,6 +40,27 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
+const normalizeStop = (stop: any): DriverStop | null => {
+  const lat = toNumber(stop?.lat) ?? toNumber(stop?.latitude);
+  const lng = toNumber(stop?.lng) ?? toNumber(stop?.longitude);
+
+  if (lat == null || lng == null) {
+    return null;
+  }
+
+  const sequence = toNumber(stop?.sequenceOrder) ?? toNumber(stop?.sequence);
+
+  return {
+    id: stop?.id ?? stop?._id,
+    name: stop?.name,
+    lat,
+    lng,
+    latitude: lat,
+    longitude: lng,
+    sequenceOrder: sequence == null ? undefined : sequence,
+  };
+};
+
 const normalizeSearchItem = (item: any): BusSearchResult | null => {
   const busId =
     item?.busId ??
@@ -60,53 +83,125 @@ const normalizeSearchItem = (item: any): BusSearchResult | null => {
     routeName: String(
       item?.routeName ?? item?.route?.name ?? item?.bus?.routeName ?? "Route",
     ),
+    routeId: item?.routeId ?? item?.route?.id ?? item?.route?._id ?? undefined,
     isActive: Boolean(item?.isActive ?? item?.active ?? item?.isLive),
   };
 };
 
 const normalizeLive = (payload: any): BusLiveStatus => {
+  const bus = payload?.bus ?? payload;
+  const route = payload?.route ?? bus?.route ?? payload?.routeInfo ?? {};
+
   const currentLat =
     toNumber(payload?.currentLat) ??
+    toNumber(bus?.currentLat) ??
     toNumber(payload?.lat) ??
+    toNumber(bus?.lat) ??
     toNumber(payload?.currentLocation?.lat) ??
+    toNumber(bus?.currentLocation?.lat) ??
     toNumber(payload?.currentLocation?.latitude) ??
+    toNumber(bus?.currentLocation?.latitude) ??
     null;
 
   const currentLng =
     toNumber(payload?.currentLng) ??
+    toNumber(bus?.currentLng) ??
     toNumber(payload?.lng) ??
+    toNumber(bus?.lng) ??
     toNumber(payload?.currentLocation?.lng) ??
+    toNumber(bus?.currentLocation?.lng) ??
     toNumber(payload?.currentLocation?.longitude) ??
+    toNumber(bus?.currentLocation?.longitude) ??
     null;
+
+  const routeStartLat =
+    toNumber(route?.startLat) ??
+    toNumber(route?.start?.lat) ??
+    toNumber(route?.start?.latitude) ??
+    null;
+
+  const routeStartLng =
+    toNumber(route?.startLng) ??
+    toNumber(route?.start?.lng) ??
+    toNumber(route?.start?.longitude) ??
+    null;
+
+  const routeEndLat =
+    toNumber(route?.endLat) ??
+    toNumber(route?.end?.lat) ??
+    toNumber(route?.end?.latitude) ??
+    null;
+
+  const routeEndLng =
+    toNumber(route?.endLng) ??
+    toNumber(route?.end?.lng) ??
+    toNumber(route?.end?.longitude) ??
+    null;
+
+  const rawRouteId =
+    payload?.routeId ??
+    route?.id ??
+    route?._id ??
+    payload?.route?.id ??
+    payload?.route?._id ??
+    payload?.bus?.routeId ??
+    payload?.bus?.route?.id ??
+    payload?.bus?.route?._id ??
+    payload?.routeInfo?.id ??
+    undefined;
+
+  const rawStops = Array.isArray(payload?.stops)
+    ? payload.stops
+    : Array.isArray(route?.stops)
+      ? route.stops
+      : Array.isArray(payload?.routeStops)
+        ? payload.routeStops
+        : [];
+
+  const normalizedStops = rawStops
+    .map((stop: any) => normalizeStop(stop))
+    .filter((stop: DriverStop | null): stop is DriverStop => Boolean(stop))
+    .sort((a: DriverStop, b: DriverStop) => {
+      const aOrder = a.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+      const bOrder = b.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+      return aOrder - bOrder;
+    });
 
   return {
     busId: String(
-      payload?.busId ?? payload?.id ?? payload?._id ?? payload?.bus?._id ?? "",
+      payload?.busId ?? bus?.id ?? bus?._id ?? payload?.id ?? payload?._id ?? "",
     ),
     numberPlate: String(
+      bus?.numberPlate ??
       payload?.numberPlate ??
-        payload?.plateNumber ??
-        payload?.bus?.numberPlate ??
-        "",
+      payload?.plateNumber ??
+      payload?.bus?.numberPlate ??
+      "",
     ),
     routeName: String(
+      route?.name ??
       payload?.routeName ??
-        payload?.route?.name ??
-        payload?.bus?.routeName ??
-        "Route",
+      payload?.route?.name ??
+      payload?.bus?.routeName ??
+      "Route",
     ),
+    routeId: rawRouteId ? String(rawRouteId) : undefined,
+    // Prefer the stored route polyline (admin-authored, passes through all stops)
+    // over any top-level field that may have been recomputed with traffic avoidance.
     encodedPolyline: String(
-      payload?.encodedPolyline ?? payload?.route?.encodedPolyline ?? "",
+      route?.encodedPolyline ?? payload?.route?.encodedPolyline ?? payload?.encodedPolyline ?? "",
     ),
-    stops: Array.isArray(payload?.stops)
-      ? payload.stops
-      : Array.isArray(payload?.route?.stops)
-        ? payload.route.stops
-        : [],
+    routeStartLat,
+    routeStartLng,
+    routeEndLat,
+    routeEndLng,
+    stops: normalizedStops,
     currentLat,
     currentLng,
     nextStop: payload?.nextStop ?? payload?.nextStopName ?? null,
     estimatedArrival: payload?.estimatedArrival ?? payload?.eta ?? null,
+    trackingStatus: bus?.trackingStatus ?? payload?.trackingStatus ?? null,
+    lastUpdated: bus?.lastUpdated ?? payload?.lastUpdated ?? null,
     isActive: Boolean(payload?.isActive ?? payload?.active ?? true),
   };
 };
@@ -163,6 +258,27 @@ export const getUserBusLive = async (busId: string) => {
   const raw = response.data as any;
   const payload = unwrap<any>(raw);
   return normalizeLive(payload);
+};
+
+export const getAdminRouteById = async (routeId: string) => {
+  const response = await apiClient.get<AdminRoute | { route?: AdminRoute }>(
+    `/api/admin/routes/${routeId}`,
+  );
+
+  const raw = response.data as any;
+  const payload = unwrap<any>(raw);
+  const route = payload?.route ?? payload;
+
+  return {
+    id: String(route?.id ?? route?._id ?? routeId),
+    name: String(route?.name ?? "Route"),
+    encodedPolyline: String(route?.encodedPolyline ?? ""),
+    totalDistanceMeters: Number(route?.totalDistanceMeters ?? 0),
+    estimatedDurationSeconds: Number(route?.estimatedDurationSeconds ?? 0),
+    isActive: Boolean(route?.isActive ?? true),
+    createdAt: route?.createdAt,
+    updatedAt: route?.updatedAt,
+  } as AdminRoute;
 };
 
 export const createUserSubscription = async (

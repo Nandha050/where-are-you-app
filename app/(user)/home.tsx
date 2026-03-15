@@ -2,22 +2,22 @@ import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Redirect, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    ImageBackground,
-    Pressable,
-    ScrollView,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  ImageBackground,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BusSearchResult, UserSubscription } from "../../api/types";
 import {
-    createUserSubscription,
-    deleteUserSubscription,
-    getUserNotifications,
-    getUserSubscriptions,
-    searchUserBuses,
+  createUserSubscription,
+  deleteUserSubscription,
+  getUserNotifications,
+  getUserSubscriptions,
+  searchUserBuses,
 } from "../../api/user";
 import { useAuth } from "../../hooks/useAuth";
 
@@ -26,6 +26,7 @@ interface SavedBusCard {
   busId: string;
   numberPlate: string;
   routeName: string;
+  routeId?: string;
   nextStop?: string;
   etaLabel?: string;
 }
@@ -44,6 +45,7 @@ const extractSavedBus = (
     busId,
     numberPlate: subscription.bus?.numberPlate ?? "BUS",
     routeName: subscription.bus?.routeName ?? "Route",
+    routeId: subscription.bus?.routeId,
     nextStop: subscription.stop?.name,
     etaLabel: subscription.notifyOnNearStop ? "Near Stop" : "Bus Start",
   };
@@ -280,6 +282,7 @@ export default function UserHome() {
                           busId: String(bus.busId),
                           plate: bus.numberPlate,
                           route: bus.routeName,
+                          routeId: bus.routeId,
                         },
                       } as any);
                     }}
@@ -372,6 +375,7 @@ export default function UserHome() {
                       busId: String(item.busId),
                       plate: item.numberPlate,
                       route: item.routeName,
+                      routeId: item.routeId,
                     },
                   } as any)
                 }
