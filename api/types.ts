@@ -25,8 +25,15 @@ export interface DriverRoute {
   id: string;
   name: string;
   encodedPolyline: string;
-  totalDistanceMeters: number;
-  estimatedDurationSeconds: number;
+  totalDistanceMeters?: number;
+  estimatedDurationSeconds?: number;
+  totalDistanceText?: string;
+  estimatedDurationText?: string;
+  etaToDestinationSeconds?: number;
+  etaToDestinationText?: string;
+  distanceToDestinationMeters?: number;
+  distanceToDestinationText?: string;
+  averageSpeedKmph?: number;
   isActive: boolean;
 }
 
@@ -38,6 +45,15 @@ export interface DriverStop {
   latitude?: number;
   longitude?: number;
   sequenceOrder?: number;
+  distanceFromCurrentMeters?: number;
+  distanceFromCurrentText?: string;
+  etaFromCurrentSeconds?: number;
+  etaFromCurrentText?: string;
+  segmentDistanceMeters?: number;
+  segmentDistanceText?: string;
+  segmentEtaSeconds?: number;
+  segmentEtaText?: string;
+  isPassed?: boolean;
 }
 
 export interface DriverMyRouteResponse {
@@ -73,6 +89,14 @@ export interface BusLiveStatus {
   estimatedArrival: string | null;
   trackingStatus?: string | null;
   lastUpdated?: string | null;
+  totalDistanceMeters?: number;
+  estimatedDurationSeconds?: number;
+  totalDistanceText?: string;
+  estimatedDurationText?: string;
+  etaToDestinationSeconds?: number;
+  etaToDestinationText?: string;
+  distanceToDestinationMeters?: number;
+  distanceToDestinationText?: string;
   isActive: boolean;
 }
 

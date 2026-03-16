@@ -1,12 +1,12 @@
 import apiClient from "./client";
 import {
-  AdminRoute,
-  BusLiveStatus,
-  BusSearchResult,
-  DriverStop,
-  UserNotification,
-  UserSubscription,
-  UserSubscriptionRequest,
+    AdminRoute,
+    BusLiveStatus,
+    BusSearchResult,
+    DriverStop,
+    UserNotification,
+    UserSubscription,
+    UserSubscriptionRequest,
 } from "./types";
 
 const unwrap = <T>(data: T | { data?: T } | { result?: T }): T => {
@@ -58,6 +58,34 @@ const normalizeStop = (stop: any): DriverStop | null => {
     latitude: lat,
     longitude: lng,
     sequenceOrder: sequence == null ? undefined : sequence,
+    distanceFromCurrentMeters:
+      toNumber(stop?.distanceFromCurrentMeters) ??
+      toNumber(stop?.distanceMeters) ??
+      undefined,
+    distanceFromCurrentText:
+      stop?.distanceFromCurrentText ?? stop?.distanceText ?? undefined,
+    etaFromCurrentSeconds:
+      toNumber(stop?.etaFromCurrentSeconds) ??
+      toNumber(stop?.etaSeconds) ??
+      undefined,
+    etaFromCurrentText: stop?.etaFromCurrentText ?? stop?.etaText ?? undefined,
+    segmentDistanceMeters:
+      toNumber(stop?.segmentDistanceMeters) ??
+      toNumber(stop?.segmentMeters) ??
+      undefined,
+    segmentDistanceText:
+      stop?.segmentDistanceText ?? stop?.segmentDistance ?? undefined,
+    segmentEtaSeconds:
+      toNumber(stop?.segmentEtaSeconds) ??
+      toNumber(stop?.segmentSeconds) ??
+      undefined,
+    segmentEtaText: stop?.segmentEtaText ?? stop?.segmentEta ?? undefined,
+    isPassed:
+      typeof stop?.isPassed === "boolean"
+        ? stop.isPassed
+        : typeof stop?.passed === "boolean"
+          ? stop.passed
+          : undefined,
   };
 };
 
@@ -169,27 +197,35 @@ const normalizeLive = (payload: any): BusLiveStatus => {
 
   return {
     busId: String(
-      payload?.busId ?? bus?.id ?? bus?._id ?? payload?.id ?? payload?._id ?? "",
+      payload?.busId ??
+        bus?.id ??
+        bus?._id ??
+        payload?.id ??
+        payload?._id ??
+        "",
     ),
     numberPlate: String(
       bus?.numberPlate ??
-      payload?.numberPlate ??
-      payload?.plateNumber ??
-      payload?.bus?.numberPlate ??
-      "",
+        payload?.numberPlate ??
+        payload?.plateNumber ??
+        payload?.bus?.numberPlate ??
+        "",
     ),
     routeName: String(
       route?.name ??
-      payload?.routeName ??
-      payload?.route?.name ??
-      payload?.bus?.routeName ??
-      "Route",
+        payload?.routeName ??
+        payload?.route?.name ??
+        payload?.bus?.routeName ??
+        "Route",
     ),
     routeId: rawRouteId ? String(rawRouteId) : undefined,
     // Prefer the stored route polyline (admin-authored, passes through all stops)
     // over any top-level field that may have been recomputed with traffic avoidance.
     encodedPolyline: String(
-      route?.encodedPolyline ?? payload?.route?.encodedPolyline ?? payload?.encodedPolyline ?? "",
+      route?.encodedPolyline ??
+        payload?.route?.encodedPolyline ??
+        payload?.encodedPolyline ??
+        "",
     ),
     routeStartLat,
     routeStartLng,
@@ -202,6 +238,34 @@ const normalizeLive = (payload: any): BusLiveStatus => {
     estimatedArrival: payload?.estimatedArrival ?? payload?.eta ?? null,
     trackingStatus: bus?.trackingStatus ?? payload?.trackingStatus ?? null,
     lastUpdated: bus?.lastUpdated ?? payload?.lastUpdated ?? null,
+    totalDistanceMeters:
+      toNumber(route?.totalDistanceMeters) ??
+      toNumber(payload?.totalDistanceMeters) ??
+      undefined,
+    estimatedDurationSeconds:
+      toNumber(route?.estimatedDurationSeconds) ??
+      toNumber(payload?.estimatedDurationSeconds) ??
+      undefined,
+    totalDistanceText:
+      route?.totalDistanceText ?? payload?.totalDistanceText ?? undefined,
+    estimatedDurationText:
+      route?.estimatedDurationText ??
+      payload?.estimatedDurationText ??
+      undefined,
+    etaToDestinationSeconds:
+      toNumber(route?.etaToDestinationSeconds) ??
+      toNumber(payload?.etaToDestinationSeconds) ??
+      undefined,
+    etaToDestinationText:
+      route?.etaToDestinationText ?? payload?.etaToDestinationText ?? undefined,
+    distanceToDestinationMeters:
+      toNumber(route?.distanceToDestinationMeters) ??
+      toNumber(payload?.distanceToDestinationMeters) ??
+      undefined,
+    distanceToDestinationText:
+      route?.distanceToDestinationText ??
+      payload?.distanceToDestinationText ??
+      undefined,
     isActive: Boolean(payload?.isActive ?? payload?.active ?? true),
   };
 };

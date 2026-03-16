@@ -4,16 +4,16 @@ import * as Location from "expo-location";
 import { Redirect, router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
+    ActivityIndicator,
+    Platform,
+    Pressable,
+    ScrollView,
+    Text,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import apiClient, { API_BASE_URL } from "../../api/client";
-import { DriverMyRouteResponse } from "../../api/types";
+import { DriverMyRouteResponse, DriverStop } from "../../api/types";
 import RouteMap from "../../components/RouteMap";
 import { useAuth } from "../../hooks/useAuth";
 import socketService from "../../sockets/socketService";
@@ -27,6 +27,14 @@ type StopMarker = {
   latitude: number;
   longitude: number;
   name: string;
+  sequenceOrder?: number;
+  distanceFromCurrentText?: string;
+  etaFromCurrentText?: string;
+  distanceFromCurrentMeters?: number;
+  etaFromCurrentSeconds?: number;
+  segmentDistanceText?: string;
+  segmentEtaText?: string;
+  isPassed?: boolean;
 };
 
 type LastSentPayload = {
@@ -34,6 +42,54 @@ type LastSentPayload = {
   longitude: number;
   source: "initial" | "watch" | "heartbeat";
   timestamp: string;
+};
+
+type ProgressStop = {
+  id?: string;
+  name: string;
+  sequenceOrder?: number;
+  distanceFromCurrentText?: string;
+  etaFromCurrentText?: string;
+  distanceFromCurrentMeters?: number;
+  etaFromCurrentSeconds?: number;
+  segmentDistanceText?: string;
+  segmentEtaText?: string;
+  isPassed?: boolean;
+};
+
+const toNumber = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+const formatEtaFromSeconds = (seconds?: number): string | null => {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+
+  if (seconds < 60) {
+    return "<1 min";
+  }
+
+  return `${Math.round(seconds / 60)} min`;
+};
+
+const formatDistanceFromMeters = (meters?: number): string | null => {
+  if (typeof meters !== "number" || !Number.isFinite(meters) || meters < 0) {
+    return null;
+  }
+
+  if (meters >= 1000) {
+    return `${(meters / 1000).toFixed(1)} km`;
+  }
+
+  return `${Math.round(meters)} m`;
 };
 
 const getLocationErrorMessage = (err: unknown): string => {
@@ -107,6 +163,36 @@ export default function DriverTrackingScreen() {
   const locationSubscription = useRef<Location.LocationSubscription | null>(
     null,
   );
+
+  const progressStops = useMemo<ProgressStop[]>(() => {
+    const stops = (routeData?.stops ?? []) as DriverStop[];
+
+    return stops
+      .map((stop, index) => {
+        const sequenceOrder =
+          toNumber(stop?.sequenceOrder) ??
+          toNumber((stop as any)?.sequence) ??
+          index + 1;
+
+        return {
+          id: stop?.id,
+          name: stop?.name || `Stop ${index + 1}`,
+          sequenceOrder,
+          distanceFromCurrentText: stop?.distanceFromCurrentText,
+          etaFromCurrentText: stop?.etaFromCurrentText,
+          distanceFromCurrentMeters: toNumber(stop?.distanceFromCurrentMeters),
+          etaFromCurrentSeconds: toNumber(stop?.etaFromCurrentSeconds),
+          segmentDistanceText: stop?.segmentDistanceText,
+          segmentEtaText: stop?.segmentEtaText,
+          isPassed: stop?.isPassed,
+        };
+      })
+      .sort((a, b) => {
+        const aOrder = a.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+        const bOrder = b.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
+        return aOrder - bOrder;
+      });
+  }, [routeData?.stops]);
 
   const stopLiveTracking = useCallback(async () => {
     if (heartbeatTimerRef.current) {
@@ -390,18 +476,30 @@ export default function DriverTrackingScreen() {
           ).map(([latitude, longitude]) => ({ latitude, longitude }))
         : [];
 
-      const stops = (payload.stops || [])
+      const stops: StopMarker[] = (payload.stops || [])
         .map((stop, index) => {
           const point = parseStopCoordinate(stop as any);
           if (!point) {
             return null;
           }
+          const stopData = stop as any;
           return {
             ...point,
-            name: (stop as any)?.name || `Stop ${index + 1}`,
-          };
+            name: stopData?.name || `Stop ${index + 1}`,
+            sequenceOrder:
+              toNumber(stopData?.sequenceOrder) ??
+              toNumber(stopData?.sequence) ??
+              index + 1,
+            distanceFromCurrentText: stopData?.distanceFromCurrentText,
+            etaFromCurrentText: stopData?.etaFromCurrentText,
+            distanceFromCurrentMeters: stopData?.distanceFromCurrentMeters,
+            etaFromCurrentSeconds: stopData?.etaFromCurrentSeconds,
+            segmentDistanceText: stopData?.segmentDistanceText,
+            segmentEtaText: stopData?.segmentEtaText,
+            isPassed: stopData?.isPassed,
+          } as StopMarker;
         })
-        .filter((point): point is StopMarker => Boolean(point));
+        .filter((point): point is StopMarker => point !== null);
 
       const start = decodedRoute[0];
       const end = decodedRoute[decodedRoute.length - 1];
@@ -469,10 +567,29 @@ export default function DriverTrackingScreen() {
     return () => clearInterval(timer);
   }, []);
 
-  const etaMinutes = useMemo(() => {
-    const seconds = routeData?.route?.estimatedDurationSeconds || 0;
-    return Math.max(1, Math.round(seconds / 60));
-  }, [routeData]);
+  const etaDisplayText =
+    routeData?.route?.etaToDestinationText ??
+    routeData?.route?.estimatedDurationText ??
+    formatEtaFromSeconds(
+      routeData?.route?.etaToDestinationSeconds ??
+        routeData?.route?.estimatedDurationSeconds,
+    ) ??
+    "-";
+
+  const remainingDistanceText =
+    routeData?.route?.distanceToDestinationText ??
+    formatDistanceFromMeters(routeData?.route?.distanceToDestinationMeters) ??
+    "-";
+
+  const totalDistanceText =
+    routeData?.route?.totalDistanceText ??
+    formatDistanceFromMeters(routeData?.route?.totalDistanceMeters) ??
+    "-";
+
+  const estimatedDurationText =
+    routeData?.route?.estimatedDurationText ??
+    formatEtaFromSeconds(routeData?.route?.estimatedDurationSeconds) ??
+    "-";
 
   const progress = useMemo(() => {
     if (!routeData?.route) {
@@ -480,22 +597,6 @@ export default function DriverTrackingScreen() {
     }
     return routeData.route.isActive ? 65 : 0;
   }, [routeData]);
-
-  const currentStopIndex = useMemo(() => {
-    if (!stopPoints.length) {
-      return -1;
-    }
-    return 0;
-  }, [stopPoints]);
-
-  const previousStop =
-    currentStopIndex > 0 ? stopPoints[currentStopIndex - 1] : null;
-  const currentStop =
-    currentStopIndex >= 0 ? stopPoints[currentStopIndex] : null;
-  const upcomingStop =
-    currentStopIndex >= 0 && currentStopIndex < stopPoints.length - 1
-      ? stopPoints[currentStopIndex + 1]
-      : null;
 
   if (!isHydrated) {
     return (
@@ -638,13 +739,12 @@ export default function DriverTrackingScreen() {
 
           <View className="mt-3 flex-row items-end">
             <Text className="text-5xl font-extrabold text-white">
-              {etaMinutes}
+              {etaDisplayText}
             </Text>
-            <Text className="mb-1 ml-1 text-2xl font-bold text-white">min</Text>
           </View>
           <Text className="mt-1 text-lg text-blue-100">
-            Estimated Arrival {updatedAt.getHours().toString().padStart(2, "0")}
-            :{updatedAt.getMinutes().toString().padStart(2, "0")}
+            Remaining {remainingDistanceText} • Route {totalDistanceText} • Plan{" "}
+            {estimatedDurationText}
           </Text>
         </View>
 
@@ -730,52 +830,89 @@ export default function DriverTrackingScreen() {
             Current Progress
           </Text>
 
-          {!stopPoints.length ? (
+          {!progressStops.length ? (
             <Text className="mt-3 text-sm text-slate-500">
               No stops available
             </Text>
           ) : (
             <View className="mt-3">
-              {previousStop && (
-                <View className="mb-3 flex-row items-start gap-3">
-                  <View className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-300" />
-                  <View className="flex-1">
-                    <Text className="text-base font-semibold text-slate-600">
-                      {previousStop.name}
-                    </Text>
-                    <Text className="text-xs text-slate-400">
-                      Passed recently
-                    </Text>
-                  </View>
-                  <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
-                </View>
-              )}
+              {progressStops.map((stop, index) => {
+                const isPassed = stop.isPassed === true;
+                const isNext =
+                  !isPassed &&
+                  progressStops
+                    .slice(0, index)
+                    .every((item) => item.isPassed === true);
+                const stopDistance =
+                  stop.distanceFromCurrentText ??
+                  formatDistanceFromMeters(stop.distanceFromCurrentMeters) ??
+                  "distance --";
+                const stopEta =
+                  stop.etaFromCurrentText ??
+                  formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
+                  "ETA --";
+                const segmentDetail =
+                  stop.segmentDistanceText || stop.segmentEtaText
+                    ? `From previous stop: ${stop.segmentDistanceText ?? "-"}${
+                        stop.segmentDistanceText && stop.segmentEtaText
+                          ? " • "
+                          : ""
+                      }${stop.segmentEtaText ?? "-"}`
+                    : null;
 
-              {currentStop && (
-                <View className="mb-3 flex-row items-start gap-3">
-                  <View className="mt-1 h-3 w-3 rounded-full border-2 border-blue-700 bg-white" />
-                  <View className="flex-1">
-                    <Text className="text-lg font-extrabold text-slate-900">
-                      {currentStop.name}
-                    </Text>
-                    <Text className="text-xs font-semibold text-blue-700">
-                      Current stop
-                    </Text>
+                return (
+                  <View
+                    key={stop.id ?? `${stop.name}-${index}`}
+                    className="mb-3 flex-row items-start gap-3"
+                  >
+                    <View
+                      className={`mt-1 h-3 w-3 rounded-full border-2 ${
+                        isNext
+                          ? "border-blue-700 bg-blue-700"
+                          : isPassed
+                            ? "border-emerald-500 bg-emerald-500"
+                            : "border-slate-300 bg-white"
+                      }`}
+                    />
+                    <View className="flex-1">
+                      <Text
+                        className={`text-base ${
+                          isNext
+                            ? "font-extrabold text-slate-900"
+                            : "font-semibold text-slate-600"
+                        }`}
+                      >
+                        {(stop.sequenceOrder != null
+                          ? `${stop.sequenceOrder}. `
+                          : "") + stop.name}
+                      </Text>
+                      <Text
+                        className={`text-xs ${
+                          isNext
+                            ? "font-semibold text-blue-700"
+                            : isPassed
+                              ? "text-slate-400"
+                              : "text-slate-500"
+                        }`}
+                      >
+                        {isNext
+                          ? "Current stop"
+                          : isPassed
+                            ? "Passed"
+                            : "Upcoming"}
+                      </Text>
+                      <Text className="mt-1 text-xs text-slate-600">
+                        {`From bus: ${stopDistance} • ${stopEta}`}
+                      </Text>
+                      {segmentDetail ? (
+                        <Text className="text-[11px] text-slate-500">
+                          {segmentDetail}
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
-                </View>
-              )}
-
-              {upcomingStop && (
-                <View className="flex-row items-start gap-3">
-                  <View className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-300" />
-                  <View className="flex-1">
-                    <Text className="text-base font-semibold text-slate-600">
-                      {upcomingStop.name}
-                    </Text>
-                    <Text className="text-xs text-slate-400">Upcoming</Text>
-                  </View>
-                </View>
-              )}
+                );
+              })}
             </View>
           )}
         </View>
