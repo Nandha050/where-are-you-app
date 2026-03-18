@@ -15,8 +15,17 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import apiClient, { API_BASE_URL } from "../../api/client";
 import { DriverMyRouteResponse, DriverStop } from "../../api/types";
 import RouteMap from "../../components/RouteMap";
+import StatusBadge from "../../components/StatusBadge";
 import { useAuth } from "../../hooks/useAuth";
+import { useDriverSocketConnectionState } from "../../hooks/useDriverSocketConnectionState";
 import socketService from "../../sockets/socketService";
+import {
+  DriverConnectionState,
+  ROUTE_CHANGE_CONFLICT_MESSAGE,
+  deriveDriverTripStatusForDisplay,
+  getDriverConnectionMessage,
+  isRouteChangeConflictError,
+} from "../../store/driverTripStatus";
 
 type MapCoordinate = {
   latitude: number;
@@ -57,6 +66,13 @@ type ProgressStop = {
   isPassed?: boolean;
 };
 
+type DriverSnapshotStatus = {
+  tripStatus: string;
+  trackingEnabled: boolean;
+};
+
+const STARTING_TRACKING_MESSAGE = "Starting tracking";
+
 const toNumber = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -66,6 +82,64 @@ const toNumber = (value: unknown): number | undefined => {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+};
+
+const toBoolean = (value: unknown): boolean | undefined => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+
+  return undefined;
+};
+
+const pickString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
+const toDriverSnapshotStatus = (payload: unknown): DriverSnapshotStatus => {
+  const source = (payload ?? {}) as Record<string, any>;
+  const data = source?.data ?? source;
+  const bus = data?.bus ?? data?.driver?.bus ?? {};
+
+  const rawTripStatus =
+    pickString(
+      data?.tripStatus,
+      data?.currentTripStatus,
+      bus?.tripStatus,
+      bus?.currentTripStatus,
+      data?.driver?.tripStatus,
+    ) ?? "TRIP_NOT_STARTED";
+
+  const trackingEnabled =
+    toBoolean(data?.trackingEnabled) ??
+    toBoolean(data?.trackingActive) ??
+    toBoolean(data?.isTracking) ??
+    toBoolean(bus?.trackingEnabled) ??
+    toBoolean(bus?.trackingActive) ??
+    toBoolean(bus?.isTracking) ??
+    false;
+
+  return {
+    tripStatus: rawTripStatus,
+    trackingEnabled,
+  };
 };
 
 const formatEtaFromSeconds = (seconds?: number): string | null => {
@@ -152,7 +226,12 @@ export default function DriverTrackingScreen() {
     null,
   );
   const [stopPoints, setStopPoints] = useState<StopMarker[]>([]);
-  const [socketConnected, setSocketConnected] = useState(false);
+  const [trackingStartPending, setTrackingStartPending] = useState(false);
+  const [backendTripStatus, setBackendTripStatus] = useState("TRIP_NOT_STARTED");
+  const [backendTrackingEnabled, setBackendTrackingEnabled] = useState(false);
+  const [routeChangeConflictMessage, setRouteChangeConflictMessage] = useState<
+    string | null
+  >(null);
   const [sendCount, setSendCount] = useState(0);
   const [lastSentPayload, setLastSentPayload] =
     useState<LastSentPayload | null>(null);
@@ -160,8 +239,6 @@ export default function DriverTrackingScreen() {
   const sendCountRef = useRef(0);
   const latestLocationRef = useRef<MapCoordinate | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const socketConnectHandlerRef = useRef<(() => void) | null>(null);
-  const socketDisconnectHandlerRef = useRef<(() => void) | null>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(
     null,
   );
@@ -203,21 +280,38 @@ export default function DriverTrackingScreen() {
     }
   }, []);
 
+  const refreshDriverSnapshot = useCallback(async () => {
+    const snapshotEndpoints = [
+      "/api/driver/my-bus",
+      "/api/driver/me",
+      "/api/driver/my-route",
+    ];
+
+    let lastError: unknown = null;
+
+    for (const endpoint of snapshotEndpoints) {
+      try {
+        const response = await apiClient.get(endpoint);
+        const snapshot = toDriverSnapshotStatus(response.data);
+        setBackendTripStatus(snapshot.tripStatus);
+        setBackendTrackingEnabled(snapshot.trackingEnabled);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError;
+  }, []);
+
+  const { connectionState } = useDriverSocketConnectionState({
+    enabled: isAuthenticated,
+    onConnectedRevalidate: refreshDriverSnapshot,
+    onHardDisconnectRevalidate: refreshDriverSnapshot,
+  });
+
   const stopLiveTracking = useCallback(async () => {
     clearHeartbeatTimer();
-
-    if (socketConnectHandlerRef.current) {
-      socketService.off("connect", socketConnectHandlerRef.current as any);
-      socketConnectHandlerRef.current = null;
-    }
-
-    if (socketDisconnectHandlerRef.current) {
-      socketService.off(
-        "disconnect",
-        socketDisconnectHandlerRef.current as any,
-      );
-      socketDisconnectHandlerRef.current = null;
-    }
 
     if (locationSubscription.current) {
       locationSubscription.current.remove();
@@ -226,8 +320,8 @@ export default function DriverTrackingScreen() {
 
     latestLocationRef.current = null;
     socketService.disconnect();
-    setSocketConnected(false);
     setIsLiveTracking(false);
+    setTrackingStartPending(false);
   }, [clearHeartbeatTimer]);
 
   const sendLocationUpdate = useCallback(
@@ -252,7 +346,6 @@ export default function DriverTrackingScreen() {
 
       socketService.connect(API_BASE_URL, token ?? undefined);
       const socketReady = await socketService.waitUntilConnected(4000);
-      setSocketConnected(socketReady);
 
       let socketSent = false;
       let restSent = false;
@@ -359,7 +452,7 @@ export default function DriverTrackingScreen() {
   );
 
   const startLiveTracking = useCallback(
-    async (busId: string) => {
+    async (busId: string): Promise<boolean> => {
       setLocationError(null);
 
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -368,7 +461,7 @@ export default function DriverTrackingScreen() {
           "Location permission denied. Enable location access and tap START TRACKING.",
         );
         setIsLiveTracking(false);
-        return;
+        return false;
       }
 
       if (locationSubscription.current) {
@@ -382,40 +475,11 @@ export default function DriverTrackingScreen() {
           "Location services are off. Turn on device GPS/location services and tap START TRACKING.",
         );
         setIsLiveTracking(false);
-        return;
+        return false;
       }
-
-      if (socketConnectHandlerRef.current) {
-        socketService.off("connect", socketConnectHandlerRef.current as any);
-      }
-
-      if (socketDisconnectHandlerRef.current) {
-        socketService.off(
-          "disconnect",
-          socketDisconnectHandlerRef.current as any,
-        );
-      }
-
-      socketConnectHandlerRef.current = () => {
-        setSocketConnected(true);
-        startHeartbeatTimer(busId);
-      };
-
-      socketDisconnectHandlerRef.current = () => {
-        setSocketConnected(false);
-        clearHeartbeatTimer();
-      };
-
-      socketService.on("connect", socketConnectHandlerRef.current as any);
-      socketService.on(
-        "disconnect",
-        socketDisconnectHandlerRef.current as any,
-      );
 
       socketService.connect(API_BASE_URL, token ?? undefined);
-      const socketReady = await socketService.waitUntilConnected(4000);
-      setSocketConnected(socketReady);
-      if (socketReady) {
+      if (await socketService.waitUntilConnected(4000)) {
         startHeartbeatTimer(busId);
       }
 
@@ -484,6 +548,8 @@ export default function DriverTrackingScreen() {
         );
 
         setIsLiveTracking(true);
+        setBackendTrackingEnabled(true);
+        return true;
       } catch (locationErr) {
         setLocationError(getLocationErrorMessage(locationErr));
         setIsLiveTracking(false);
@@ -491,10 +557,55 @@ export default function DriverTrackingScreen() {
         if (error?.code !== 1) {
           console.error("Live tracking start failed:", locationErr);
         }
+        return false;
       }
     },
-    [clearHeartbeatTimer, sendLocationUpdate, startHeartbeatTimer, token],
+    [sendLocationUpdate, startHeartbeatTimer, token],
   );
+
+  const startTrackingSession = useCallback(async () => {
+    const busId = routeData?.bus?.id;
+    if (!busId || trackingStartPending) {
+      return;
+    }
+
+    setRouteChangeConflictMessage(null);
+    setTrackingStartPending(true);
+
+    try {
+      await apiClient.post("/api/driver/tracking/start", {});
+    } catch (error: any) {
+      if (isRouteChangeConflictError(error)) {
+        setRouteChangeConflictMessage(ROUTE_CHANGE_CONFLICT_MESSAGE);
+      } else {
+        setLocationError(
+          error?.response?.data?.message ??
+            error?.message ??
+            "Unable to start tracking right now.",
+        );
+      }
+
+      setTrackingStartPending(false);
+      return;
+    }
+
+    const started = await startLiveTracking(busId);
+    if (!started) {
+      setTrackingStartPending(false);
+      return;
+    }
+
+    try {
+      await refreshDriverSnapshot();
+    } catch {
+      // Keep local session active while backend snapshot catches up.
+    }
+  }, [
+    refreshDriverSnapshot,
+    routeData?.bus?.id,
+    startLiveTracking,
+    trackingStartPending,
+  ]);
 
   const loadTracking = useCallback(async () => {
     if (!isAuthenticated) {
@@ -506,12 +617,6 @@ export default function DriverTrackingScreen() {
     setError(null);
 
     try {
-      try {
-        await apiClient.post("/api/driver/tracking/start", {});
-      } catch {
-        // Keep going even if tracking is already active
-      }
-
       const response = await apiClient.get<
         DriverMyRouteResponse | { data?: DriverMyRouteResponse }
       >("/api/driver/my-route");
@@ -525,6 +630,11 @@ export default function DriverTrackingScreen() {
       }
 
       setRouteData(payload);
+
+      const snapshot = toDriverSnapshotStatus(payload);
+      setBackendTripStatus(snapshot.tripStatus);
+      setBackendTrackingEnabled(snapshot.trackingEnabled);
+      setIsLiveTracking(snapshot.trackingEnabled);
 
       const decodedRoute = payload.route.encodedPolyline
         ? (
@@ -585,9 +695,7 @@ export default function DriverTrackingScreen() {
       setMapPath(stitchedPath.length >= 2 ? stitchedPath : decodedRoute);
       setUpdatedAt(new Date());
 
-      if (Platform.OS !== "web") {
-        await startLiveTracking(payload.bus.id);
-      } else {
+      if (Platform.OS === "web" && !snapshot.trackingEnabled) {
         setLocationError(
           "Tap START TRACKING to begin live location sharing in browser.",
         );
@@ -601,7 +709,7 @@ export default function DriverTrackingScreen() {
     } finally {
       setLoading(false);
     }
-  }, [isAuthenticated, startLiveTracking]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (isHydrated) {
@@ -616,12 +724,53 @@ export default function DriverTrackingScreen() {
   }, [stopLiveTracking]);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setSocketConnected(socketService.isConnected());
-    }, 2000);
+    if (!isLiveTracking || !routeData?.bus?.id) {
+      clearHeartbeatTimer();
+      return;
+    }
 
-    return () => clearInterval(timer);
-  }, []);
+    if (connectionState === DriverConnectionState.CONNECTED) {
+      startHeartbeatTimer(routeData.bus.id);
+      return;
+    }
+
+    clearHeartbeatTimer();
+  }, [
+    clearHeartbeatTimer,
+    connectionState,
+    isLiveTracking,
+    routeData?.bus?.id,
+    startHeartbeatTimer,
+  ]);
+
+  useEffect(() => {
+    if (!trackingStartPending) {
+      return;
+    }
+
+    if (
+      connectionState === DriverConnectionState.CONNECTED ||
+      connectionState === DriverConnectionState.DISCONNECTED_HARD
+    ) {
+      setTrackingStartPending(false);
+    }
+  }, [connectionState, trackingStartPending]);
+
+  const socketConnected = connectionState === DriverConnectionState.CONNECTED;
+
+  const trackingEnabledForTripStatus =
+    backendTrackingEnabled || isLiveTracking || trackingStartPending;
+
+  const displayTripStatus = deriveDriverTripStatusForDisplay({
+    backendTripStatus,
+    trackingEnabled: trackingEnabledForTripStatus,
+    connectionState,
+  });
+
+  const connectionMessage =
+    trackingStartPending && connectionState !== DriverConnectionState.CONNECTED
+      ? STARTING_TRACKING_MESSAGE
+      : getDriverConnectionMessage(connectionState);
 
   const etaDisplayText =
     routeData?.route?.etaToDestinationText ??
@@ -743,7 +892,11 @@ export default function DriverTrackingScreen() {
           <View className="rounded-full bg-emerald-100 px-4 py-2">
             <Text className="text-sm font-extrabold text-emerald-700">
               ● ACTIVE SESSION ●{" "}
-              {isLiveTracking ? "ACTIVE SESSION" : "STARTING SESSION"}
+              {trackingStartPending
+                ? "STARTING TRACKING"
+                : isLiveTracking
+                  ? "TRACKING ENABLED"
+                  : "TRACKING OFF"}
             </Text>
           </View>
 
@@ -762,6 +915,24 @@ export default function DriverTrackingScreen() {
             </Text>
           </View>
         </View>
+
+        <View className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <View className="flex-row flex-wrap items-center gap-2">
+            <StatusBadge statusType="tripStatus" statusCode={displayTripStatus} size="md" />
+            <Text className="text-xs font-semibold text-slate-500">
+              {connectionState}
+            </Text>
+          </View>
+          <Text className="mt-2 text-sm text-slate-700">{connectionMessage}</Text>
+        </View>
+
+        {routeChangeConflictMessage ? (
+          <View className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
+            <Text className="text-sm font-semibold text-amber-800">
+              {routeChangeConflictMessage}
+            </Text>
+          </View>
+        ) : null}
 
         <View className="mt-4 rounded-2xl bg-slate-200 px-3 py-3">
           <View className="flex-row items-center gap-3">
@@ -831,13 +1002,7 @@ export default function DriverTrackingScreen() {
           ) : (
             <Pressable
               className="flex-1 items-center rounded-2xl border border-emerald-300 bg-emerald-50 px-3 py-4"
-              onPress={async () => {
-                const busId = routeData?.bus?.id;
-                if (!busId) {
-                  return;
-                }
-                await startLiveTracking(busId);
-              }}
+              onPress={startTrackingSession}
             >
               <MaterialCommunityIcons
                 name="play-circle-outline"
@@ -865,6 +1030,11 @@ export default function DriverTrackingScreen() {
           </Text>
           <Text className="mt-1 text-xs text-slate-700">
             Socket: {socketConnected ? "CONNECTED" : "DISCONNECTED"}
+          </Text>
+          <Text className="text-xs text-slate-700">Connection: {connectionState}</Text>
+          <Text className="text-xs text-slate-700">Backend trip: {backendTripStatus}</Text>
+          <Text className="text-xs text-slate-700">
+            Rendered trip: {displayTripStatus}
           </Text>
           <Text className="text-xs text-slate-700">Sends: {sendCount}</Text>
           <Text className="text-xs text-slate-700">
