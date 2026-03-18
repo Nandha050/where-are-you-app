@@ -4,19 +4,19 @@ import * as Location from "expo-location";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
+    ActivityIndicator,
+    Pressable,
+    ScrollView,
+    Text,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { API_BASE_URL } from "../../api/client";
 import { BusLiveStatus, DriverStop } from "../../api/types";
 import {
-  createUserSubscription,
-  getUserBusLive,
-  getUserSubscriptions,
+    createUserSubscription,
+    getUserBusLive,
+    getUserSubscriptions,
 } from "../../api/user";
 import RouteMap from "../../components/RouteMap";
 import StatusBadge from "../../components/StatusBadge";
@@ -41,6 +41,13 @@ type OrderedStop = {
   latitude: number;
   longitude: number;
   sequenceOrder?: number;
+  distanceFromCurrentText?: string;
+  etaFromCurrentText?: string;
+  distanceFromCurrentMeters?: number;
+  etaFromCurrentSeconds?: number;
+  segmentDistanceText?: string;
+  segmentEtaText?: string;
+  isPassed?: boolean;
 };
 
 const toStopCoord = (stop: DriverStop): OrderedStop | null => {
@@ -67,6 +74,13 @@ const toStopCoord = (stop: DriverStop): OrderedStop | null => {
     latitude,
     longitude,
     sequenceOrder: stop.sequenceOrder,
+    distanceFromCurrentText: stop.distanceFromCurrentText,
+    etaFromCurrentText: stop.etaFromCurrentText,
+    distanceFromCurrentMeters: stop.distanceFromCurrentMeters,
+    etaFromCurrentSeconds: stop.etaFromCurrentSeconds,
+    segmentDistanceText: stop.segmentDistanceText,
+    segmentEtaText: stop.segmentEtaText,
+    isPassed: stop.isPassed,
   };
 };
 
@@ -104,6 +118,30 @@ const buildFallbackPath = (
   return deduped;
 };
 
+const formatEtaFromSeconds = (seconds?: number): string | null => {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+
+  if (seconds < 60) {
+    return "<1 min";
+  }
+
+  return `${Math.round(seconds / 60)} min`;
+};
+
+const formatDistanceFromMeters = (meters?: number): string | null => {
+  if (typeof meters !== "number" || !Number.isFinite(meters) || meters < 0) {
+    return null;
+  }
+
+  if (meters >= 1000) {
+    return `${(meters / 1000).toFixed(1)} km`;
+  }
+
+  return `${Math.round(meters)} m`;
+};
+
 export default function UserTrackingScreen() {
   const params = useLocalSearchParams<{
     busId: string | string[];
@@ -136,14 +174,36 @@ export default function UserTrackingScreen() {
       });
   }, [live?.stops]);
 
-  const stopsWithStatus = useMemo<(OrderedStop & { status: StopStatus })[]>(() => {
+  const stopsWithStatus = useMemo<
+    (OrderedStop & { status: StopStatus })[]
+  >(() => {
     if (!orderedStops.length) return [];
+
+    const hasBackendPassState = orderedStops.some(
+      (stop) => typeof stop.isPassed === "boolean",
+    );
+
+    if (hasBackendPassState) {
+      const firstNotPassedIndex = orderedStops.findIndex(
+        (stop) => stop.isPassed !== true,
+      );
+
+      return orderedStops.map((stop, index) => ({
+        ...stop,
+        status:
+          stop.isPassed === true
+            ? "passed"
+            : index === (firstNotPassedIndex < 0 ? 0 : firstNotPassedIndex)
+              ? "next"
+              : "upcoming",
+      }));
+    }
 
     const normalizedNextStop = live?.nextStop?.trim().toLowerCase();
     let nextStopIndex = normalizedNextStop
       ? orderedStops.findIndex(
-        (stop) => stop.name?.trim().toLowerCase() === normalizedNextStop,
-      )
+          (stop) => stop.name?.trim().toLowerCase() === normalizedNextStop,
+        )
       : -1;
 
     if (nextStopIndex < 0 && currentLocation) {
@@ -242,16 +302,16 @@ export default function UserTrackingScreen() {
           const start =
             liveData.routeStartLat != null && liveData.routeStartLng != null
               ? {
-                latitude: liveData.routeStartLat,
-                longitude: liveData.routeStartLng,
-              }
+                  latitude: liveData.routeStartLat,
+                  longitude: liveData.routeStartLng,
+                }
               : null;
           const end =
             liveData.routeEndLat != null && liveData.routeEndLng != null
               ? {
-                latitude: liveData.routeEndLat,
-                longitude: liveData.routeEndLng,
-              }
+                  latitude: liveData.routeEndLat,
+                  longitude: liveData.routeEndLng,
+                }
               : null;
 
           setPath(buildFallbackPath(start, orderedStopsFromLive, end));
@@ -259,8 +319,8 @@ export default function UserTrackingScreen() {
       } catch (err: any) {
         setError(
           err?.response?.data?.message ??
-          err?.message ??
-          "Failed to load live bus",
+            err?.message ??
+            "Failed to load live bus",
         );
       } finally {
         setLoading(false);
@@ -427,9 +487,28 @@ export default function UserTrackingScreen() {
     );
   }
 
-  const nextStop = live?.nextStop ?? "Main Street & 5th Ave";
-  const eta = live?.estimatedArrival ?? "3 mins away";
-  const scheduled = live?.estimatedArrival ?? "08:42 AM";
+  const nextStop =
+    live?.nextStop ??
+    stopsWithStatus.find((stop) => stop.status === "next")?.name ??
+    "-";
+  const eta =
+    live?.etaToDestinationText ??
+    live?.estimatedArrival ??
+    formatEtaFromSeconds(live?.etaToDestinationSeconds) ??
+    formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
+    "-";
+  const scheduled =
+    live?.distanceToDestinationText ??
+    formatDistanceFromMeters(live?.distanceToDestinationMeters) ??
+    "-";
+  const totalDistanceText =
+    live?.totalDistanceText ??
+    formatDistanceFromMeters(live?.totalDistanceMeters) ??
+    "-";
+  const estimatedDurationText =
+    live?.estimatedDurationText ??
+    formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
+    "-";
 
   return (
     <SafeAreaView className="flex-1 bg-[#F2F4F8]">
@@ -518,17 +597,46 @@ export default function UserTrackingScreen() {
               </Text>
             </View>
             <View className="items-end">
-              <Text className="text-xs text-slate-500">Scheduled</Text>
+              <Text className="text-xs text-slate-500">Remaining</Text>
               <Text className="text-base font-bold text-slate-900">
                 {scheduled}
               </Text>
             </View>
           </View>
-          <View className="mt-3 flex-row items-center justify-between">
+          <View className="mt-3 border-t border-slate-200 pt-3">
+            <Text className="text-xs font-semibold text-slate-600">
+              Route Summary
+            </Text>
+            <View className="mt-2 flex-row justify-between gap-3">
+              <View className="flex-1">
+                <Text className="text-xs text-slate-500">Total Distance</Text>
+                <Text className="text-sm font-bold text-slate-900">
+                  {totalDistanceText}
+                </Text>
+              </View>
+              <View className="flex-1">
+                <Text className="text-xs text-slate-500">Est. Duration</Text>
+                <Text className="text-sm font-bold text-slate-900">
+                  {estimatedDurationText}
+                </Text>
+              </View>
+              <View className="flex-1">
+                <Text className="text-xs text-slate-500">Remaining</Text>
+                <Text className="text-sm font-bold text-slate-900">
+                  {live?.distanceToDestinationText ||
+                    (live?.distanceToDestinationMeters
+                      ? `${(live.distanceToDestinationMeters / 1000).toFixed(1)} km`
+                      : "-")}
+                </Text>
+              </View>
+            </View>
+          </View>
+          <View className="mt-3 flex-row items-center justify-between border-t border-slate-200 pt-3">
             <Text className="text-xs text-slate-600">Next: {nextStop}</Text>
             <Pressable
-              className={`rounded-full px-3 py-1.5 flex-row items-center gap-1.5 ${isSubscribed ? "bg-emerald-100" : "bg-[#E3EBFF]"
-                }`}
+              className={`rounded-full px-3 py-1.5 flex-row items-center gap-1.5 ${
+                isSubscribed ? "bg-emerald-100" : "bg-[#E3EBFF]"
+              }`}
               onPress={subscribeForAlerts}
               disabled={submittingSubscription || isSubscribed}
             >
@@ -544,8 +652,9 @@ export default function UserTrackingScreen() {
                     color={isSubscribed ? "#15803D" : "#1847BA"}
                   />
                   <Text
-                    className={`text-[11px] font-bold ${isSubscribed ? "text-emerald-700" : "text-[#1847BA]"
-                      }`}
+                    className={`text-[11px] font-bold ${
+                      isSubscribed ? "text-emerald-700" : "text-[#1847BA]"
+                    }`}
                   >
                     {isSubscribed ? "Subscribed" : "Subscribe"}
                   </Text>
@@ -587,20 +696,40 @@ export default function UserTrackingScreen() {
               stopsWithStatus.map((stop, index) => {
                 const isNext = stop.status === "next";
                 const isPassed = stop.status === "passed";
+                const stopDistance =
+                  stop.distanceFromCurrentText ??
+                  formatDistanceFromMeters(stop.distanceFromCurrentMeters) ??
+                  "distance --";
+                const stopEta =
+                  stop.etaFromCurrentText ??
+                  formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
+                  "ETA --";
+                const segmentDetail =
+                  stop.segmentDistanceText || stop.segmentEtaText
+                    ? `From previous stop: ${stop.segmentDistanceText ?? "-"}${
+                        stop.segmentDistanceText && stop.segmentEtaText
+                          ? " • "
+                          : ""
+                      }${stop.segmentEtaText ?? "-"}`
+                    : null;
 
                 return (
                   <View
-                    key={stop.id ?? `${stop.name ?? "stop"}-${index}-${stop.sequenceOrder ?? "na"}`}
+                    key={
+                      stop.id ??
+                      `${stop.name ?? "stop"}-${index}-${stop.sequenceOrder ?? "na"}`
+                    }
                     className="flex-row mb-3"
                   >
                     <View className="mr-3 items-center" style={{ width: 16 }}>
                       <View
-                        className={`h-3.5 w-3.5 rounded-full border-2 ${isNext
-                          ? "border-[#1847BA] bg-[#1847BA]"
-                          : isPassed
-                            ? "border-emerald-500 bg-emerald-500"
-                            : "border-slate-300 bg-white"
-                          }`}
+                        className={`h-3.5 w-3.5 rounded-full border-2 ${
+                          isNext
+                            ? "border-[#1847BA] bg-[#1847BA]"
+                            : isPassed
+                              ? "border-emerald-500 bg-emerald-500"
+                              : "border-slate-300 bg-white"
+                        }`}
                       />
                       {index < stopsWithStatus.length - 1 && (
                         <View className="mt-1 w-0.5 h-10 bg-slate-200" />
@@ -609,21 +738,32 @@ export default function UserTrackingScreen() {
 
                     <View className="flex-1">
                       <Text
-                        className={`text-sm ${isNext
-                          ? "font-extrabold text-slate-900"
-                          : "text-slate-600"
-                          }`}
+                        className={`text-sm ${
+                          isNext
+                            ? "font-extrabold text-slate-900"
+                            : "text-slate-600"
+                        }`}
                       >
-                        {(stop.sequenceOrder != null ? `${stop.sequenceOrder}. ` : "") +
-                          (stop.name ?? `Stop ${index + 1}`)}
+                        {(stop.sequenceOrder != null
+                          ? `${stop.sequenceOrder}. `
+                          : "") + (stop.name ?? `Stop ${index + 1}`)}
                       </Text>
+                      <Text className="mt-1 text-xs text-slate-600">
+                        {`From bus: ${stopDistance} • ${stopEta}`}
+                      </Text>
+                      {segmentDetail ? (
+                        <Text className="text-[11px] text-slate-500">
+                          {segmentDetail}
+                        </Text>
+                      ) : null}
                       <Text
-                        className={`text-xs ${isNext
-                          ? "font-semibold text-[#1847BA]"
-                          : isPassed
-                            ? "text-slate-400"
-                            : "text-slate-500"
-                          }`}
+                        className={`text-xs mt-1 ${
+                          isNext
+                            ? "font-semibold text-[#1847BA]"
+                            : isPassed
+                              ? "text-slate-400"
+                              : "text-slate-500"
+                        }`}
                       >
                         {isNext
                           ? "Next Stop"

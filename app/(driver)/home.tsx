@@ -267,14 +267,21 @@ export default function DriverHome() {
 
                 <View className="mt-3 rounded-xl bg-slate-100 px-4 py-3">
                   <Text className="text-sm text-slate-700">
-                    Distance: {routeData?.route?.totalDistanceMeters || 0} m
+                    Distance:{" "}
+                    {routeData?.route?.totalDistanceText ||
+                      `${routeData?.route?.totalDistanceMeters || 0} m`}
                   </Text>
                   <Text className="mt-1 text-sm text-slate-700">
                     ETA:{" "}
-                    {Math.round(
-                      (routeData?.route?.estimatedDurationSeconds || 0) / 60,
-                    )}{" "}
-                    min
+                    {routeData?.route?.etaToDestinationText ||
+                      routeData?.route?.estimatedDurationText ||
+                      `${Math.round(
+                        (routeData?.route?.estimatedDurationSeconds || 0) / 60,
+                      )} min`}
+                  </Text>
+                  <Text className="mt-1 text-sm text-slate-700">
+                    Remaining:{" "}
+                    {routeData?.route?.distanceToDestinationText || "-"}
                   </Text>
                   <Text className="mt-1 text-sm text-slate-700">
                     Stops: {routeData?.stops?.length || 0}
