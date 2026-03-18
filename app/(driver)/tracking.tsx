@@ -104,14 +104,33 @@ export default function DriverTrackingScreen() {
   const sendCountRef = useRef(0);
   const latestLocationRef = useRef<MapCoordinate | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const socketConnectHandlerRef = useRef<(() => void) | null>(null);
+  const socketDisconnectHandlerRef = useRef<(() => void) | null>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(
     null,
   );
 
-  const stopLiveTracking = useCallback(async () => {
+  const clearHeartbeatTimer = useCallback(() => {
     if (heartbeatTimerRef.current) {
       clearInterval(heartbeatTimerRef.current);
       heartbeatTimerRef.current = null;
+    }
+  }, []);
+
+  const stopLiveTracking = useCallback(async () => {
+    clearHeartbeatTimer();
+
+    if (socketConnectHandlerRef.current) {
+      socketService.off("connect", socketConnectHandlerRef.current as any);
+      socketConnectHandlerRef.current = null;
+    }
+
+    if (socketDisconnectHandlerRef.current) {
+      socketService.off(
+        "disconnect",
+        socketDisconnectHandlerRef.current as any,
+      );
+      socketDisconnectHandlerRef.current = null;
     }
 
     if (locationSubscription.current) {
@@ -123,7 +142,7 @@ export default function DriverTrackingScreen() {
     socketService.disconnect();
     setSocketConnected(false);
     setIsLiveTracking(false);
-  }, []);
+  }, [clearHeartbeatTimer]);
 
   const sendLocationUpdate = useCallback(
     async (
@@ -223,6 +242,36 @@ export default function DriverTrackingScreen() {
     [token],
   );
 
+  const startHeartbeatTimer = useCallback(
+    (busId: string) => {
+      clearHeartbeatTimer();
+
+      heartbeatTimerRef.current = setInterval(async () => {
+        if (!socketService.isConnected()) {
+          return;
+        }
+
+        const latest = latestLocationRef.current;
+        if (!latest) {
+          return;
+        }
+
+        try {
+          await sendLocationUpdate(
+            latest.latitude,
+            latest.longitude,
+            busId,
+            "heartbeat",
+          );
+          setUpdatedAt(new Date());
+        } catch (heartbeatError) {
+          console.error("Heartbeat location update failed:", heartbeatError);
+        }
+      }, 5000);
+    },
+    [clearHeartbeatTimer, sendLocationUpdate],
+  );
+
   const startLiveTracking = useCallback(
     async (busId: string) => {
       setLocationError(null);
@@ -250,8 +299,39 @@ export default function DriverTrackingScreen() {
         return;
       }
 
+      if (socketConnectHandlerRef.current) {
+        socketService.off("connect", socketConnectHandlerRef.current as any);
+      }
+
+      if (socketDisconnectHandlerRef.current) {
+        socketService.off(
+          "disconnect",
+          socketDisconnectHandlerRef.current as any,
+        );
+      }
+
+      socketConnectHandlerRef.current = () => {
+        setSocketConnected(true);
+        startHeartbeatTimer(busId);
+      };
+
+      socketDisconnectHandlerRef.current = () => {
+        setSocketConnected(false);
+        clearHeartbeatTimer();
+      };
+
+      socketService.on("connect", socketConnectHandlerRef.current as any);
+      socketService.on(
+        "disconnect",
+        socketDisconnectHandlerRef.current as any,
+      );
+
       socketService.connect(API_BASE_URL, token ?? undefined);
-      setSocketConnected(await socketService.waitUntilConnected(4000));
+      const socketReady = await socketService.waitUntilConnected(4000);
+      setSocketConnected(socketReady);
+      if (socketReady) {
+        startHeartbeatTimer(busId);
+      }
 
       try {
         try {
@@ -317,30 +397,6 @@ export default function DriverTrackingScreen() {
           },
         );
 
-        if (heartbeatTimerRef.current) {
-          clearInterval(heartbeatTimerRef.current);
-          heartbeatTimerRef.current = null;
-        }
-
-        heartbeatTimerRef.current = setInterval(async () => {
-          const latest = latestLocationRef.current;
-          if (!latest) {
-            return;
-          }
-
-          try {
-            await sendLocationUpdate(
-              latest.latitude,
-              latest.longitude,
-              busId,
-              "heartbeat",
-            );
-            setUpdatedAt(new Date());
-          } catch (heartbeatError) {
-            console.error("Heartbeat location update failed:", heartbeatError);
-          }
-        }, 5000);
-
         setIsLiveTracking(true);
       } catch (locationErr) {
         setLocationError(getLocationErrorMessage(locationErr));
@@ -351,7 +407,7 @@ export default function DriverTrackingScreen() {
         }
       }
     },
-    [sendLocationUpdate, token],
+    [clearHeartbeatTimer, sendLocationUpdate, startHeartbeatTimer, token],
   );
 
   const loadTracking = useCallback(async () => {
@@ -386,8 +442,8 @@ export default function DriverTrackingScreen() {
 
       const decodedRoute = payload.route.encodedPolyline
         ? (
-            polyline.decode(payload.route.encodedPolyline) as [number, number][]
-          ).map(([latitude, longitude]) => ({ latitude, longitude }))
+          polyline.decode(payload.route.encodedPolyline) as [number, number][]
+        ).map(([latitude, longitude]) => ({ latitude, longitude }))
         : [];
 
       const stops = (payload.stops || [])
@@ -441,8 +497,8 @@ export default function DriverTrackingScreen() {
     } catch (err: any) {
       setError(
         err?.response?.data?.message ||
-          err?.message ||
-          "Failed to load tracking data",
+        err?.message ||
+        "Failed to load tracking data",
       );
     } finally {
       setLoading(false);

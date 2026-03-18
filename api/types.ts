@@ -71,6 +71,9 @@ export interface BusLiveStatus {
   currentLng: number | null;
   nextStop: string | null;
   estimatedArrival: string | null;
+  fleetStatus?: string | null;
+  tripStatus?: string | null;
+  status?: string | null;
   trackingStatus?: string | null;
   lastUpdated?: string | null;
   isActive: boolean;

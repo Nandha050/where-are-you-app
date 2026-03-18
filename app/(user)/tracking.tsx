@@ -19,8 +19,14 @@ import {
   getUserSubscriptions,
 } from "../../api/user";
 import RouteMap from "../../components/RouteMap";
+import StatusBadge from "../../components/StatusBadge";
 import socketService from "../../sockets/socketService";
 import authStore from "../../store/auth";
+import {
+  createBusStatusStateFromRestSnapshot,
+  mergeBusStatusFromSocketUpdate,
+  type BusStatusState,
+} from "../../store/busStatus";
 
 type Coord = {
   latitude: number;
@@ -115,6 +121,9 @@ export default function UserTrackingScreen() {
   const [currentLocation, setCurrentLocation] = useState<Coord | null>(null);
   const [submittingSubscription, setSubmittingSubscription] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
+  const [statusState, setStatusState] = useState<BusStatusState>(() =>
+    createBusStatusStateFromRestSnapshot({}),
+  );
 
   const orderedStops = useMemo<OrderedStop[]>(() => {
     return (live?.stops ?? [])
@@ -187,6 +196,15 @@ export default function UserTrackingScreen() {
         ]);
 
         setLive(liveData);
+        setStatusState(
+          createBusStatusStateFromRestSnapshot({
+            fleetStatus: liveData.fleetStatus,
+            tripStatus: liveData.tripStatus,
+            trackingStatus: liveData.trackingStatus,
+            status: liveData.status,
+            lastUpdated: liveData.lastUpdated,
+          }),
+        );
         setIsSubscribed(
           subscriptions.some((s) => String(s.busId) === String(busId)),
         );
@@ -284,6 +302,11 @@ export default function UserTrackingScreen() {
         lng?: number;
         nextStop?: string;
         estimatedArrival?: string;
+        trackingStatus?: string;
+        tripStatus?: string;
+        status?: string;
+        timestamp?: string;
+        skipped?: boolean;
       };
 
       const eventBusId =
@@ -306,6 +329,16 @@ export default function UserTrackingScreen() {
         setCurrentLocation({ latitude, longitude });
       }
 
+      setStatusState((previous) =>
+        mergeBusStatusFromSocketUpdate(previous, {
+          trackingStatus: event.trackingStatus,
+          tripStatus: event.tripStatus,
+          status: event.status,
+          timestamp: event.timestamp,
+          skipped: event.skipped,
+        }),
+      );
+
       setLive((prev) =>
         prev
           ? {
@@ -314,6 +347,22 @@ export default function UserTrackingScreen() {
             currentLng: longitude ?? prev.currentLng,
             nextStop: event.nextStop ?? prev.nextStop,
             estimatedArrival: event.estimatedArrival ?? prev.estimatedArrival,
+            trackingStatus:
+              event.skipped || event.trackingStatus == null
+                ? prev.trackingStatus
+                : event.trackingStatus,
+            tripStatus:
+              event.skipped || event.tripStatus == null
+                ? prev.tripStatus
+                : event.tripStatus,
+            status:
+              event.skipped || event.status == null
+                ? prev.status
+                : event.status,
+            lastUpdated:
+              event.skipped || event.timestamp == null
+                ? prev.lastUpdated
+                : event.timestamp,
           }
           : prev,
       );
@@ -503,6 +552,23 @@ export default function UserTrackingScreen() {
                 </>
               )}
             </Pressable>
+          </View>
+          <View className="mt-3 flex-row flex-wrap gap-2">
+            <StatusBadge
+              statusType="trackingStatus"
+              statusCode={statusState.trackingStatus.code}
+              size="md"
+            />
+            <StatusBadge
+              statusType="tripStatus"
+              statusCode={statusState.tripStatus.code}
+              size="md"
+            />
+            <StatusBadge
+              statusType="fleetStatus"
+              statusCode={statusState.fleetStatus.code}
+              size="md"
+            />
           </View>
         </View>
 
