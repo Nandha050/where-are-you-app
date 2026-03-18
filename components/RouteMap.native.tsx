@@ -47,12 +47,17 @@ export default function RouteMap({
     return coordinatesProp;
   }, [encodedPolyline, coordinatesProp]);
 
-  if (!coordinates.length) {
-    return null;
-  }
-
   const initialRegion = useMemo(() => {
     const routePoints: Coord[] = [...coordinates, ...stops];
+    if (!routePoints.length) {
+      return {
+        latitude: 0,
+        longitude: 0,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      };
+    }
+
     const latitudes = routePoints.map((p) => p.latitude);
     const longitudes = routePoints.map((p) => p.longitude);
 
@@ -71,6 +76,10 @@ export default function RouteMap({
       longitudeDelta: Math.max((maxLng - minLng) * 1.6, 0.01),
     };
   }, [coordinates, stops]);
+
+  if (!coordinates.length) {
+    return null;
+  }
 
   const stopPinColor = (status?: StopStatus) => {
     if (status === "passed") return "#10b981";

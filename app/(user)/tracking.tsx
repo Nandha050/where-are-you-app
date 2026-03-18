@@ -4,19 +4,19 @@ import * as Location from "expo-location";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    ScrollView,
-    Text,
-    View,
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { API_BASE_URL } from "../../api/client";
 import { BusLiveStatus, DriverStop } from "../../api/types";
 import {
-    createUserSubscription,
-    getUserBusLive,
-    getUserSubscriptions,
+  createUserSubscription,
+  getUserBusLive,
+  getUserSubscriptions,
 } from "../../api/user";
 import RouteMap from "../../components/RouteMap";
 import StatusBadge from "../../components/StatusBadge";
