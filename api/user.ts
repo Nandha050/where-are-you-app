@@ -1,4 +1,4 @@
-import apiClient from "./client";
+import apiClient, { assertAxiosSuccess, logApiError } from "./client";
 import {
   AdminRoute,
   BusLiveStatus,
@@ -317,7 +317,16 @@ const pickArray = (payload: any): any[] => {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== "object") return [];
 
-  const directKeys = ["buses", "items", "docs", "rows", "results", "list"];
+  const directKeys = [
+    "buses",
+    "items",
+    "docs",
+    "rows",
+    "results",
+    "list",
+    "subscriptions",
+    "notifications",
+  ];
   for (const key of directKeys) {
     const value = payload?.[key];
     if (Array.isArray(value)) return value;
@@ -331,96 +340,179 @@ const pickArray = (payload: any): any[] => {
   return [];
 };
 
+const asObject = (value: unknown): Record<string, any> => {
+  if (value && typeof value === "object") {
+    return value as Record<string, any>;
+  }
+
+  return {};
+};
+
+const withApiGuard = async <T>(scope: string, handler: () => Promise<T>): Promise<T> => {
+  try {
+    return await handler();
+  } catch (error) {
+    throw logApiError(scope, error);
+  }
+};
+
 export const searchUserBuses = async (numberPlate: string) => {
-  const normalized = numberPlate.trim().toUpperCase();
+  return withApiGuard("searchUserBuses", async () => {
+    const normalized = String(numberPlate ?? "").trim().toUpperCase();
+    if (!normalized) {
+      return [];
+    }
 
-  const response = await apiClient.get<
-    BusSearchResult[] | { data?: BusSearchResult[] }
-  >("/api/user/buses/search", {
-    params: {
-      numberPlate: normalized,
-      q: normalized,
-      plate: normalized,
-    },
+    const response = await apiClient.get<
+      BusSearchResult[] | { data?: BusSearchResult[] }
+    >("/api/user/buses/search", {
+      params: {
+        numberPlate: normalized,
+        q: normalized,
+        plate: normalized,
+      },
+    });
+    const safeResponse = assertAxiosSuccess(response, "searchUserBuses");
+
+    const raw = safeResponse.data as any;
+    const payload = unwrap<any>(raw);
+    const list = pickArray(payload);
+
+    const normalizedResults = list
+      .map((item: any) => normalizeSearchItem(item))
+      .filter((item: BusSearchResult | null): item is BusSearchResult =>
+        Boolean(item),
+      );
+
+    return normalizedResults;
   });
-
-  const raw = response.data as any;
-  const payload = unwrap<any>(raw);
-  const list = pickArray(payload);
-
-  const normalizedResults = list
-    .map((item: any) => normalizeSearchItem(item))
-    .filter((item: BusSearchResult | null): item is BusSearchResult =>
-      Boolean(item),
-    );
-
-  return normalizedResults;
 };
 
 export const getUserBusLive = async (busId: string) => {
-  const response = await apiClient.get<
-    BusLiveStatus | { data?: BusLiveStatus }
-  >(`/api/user/buses/${busId}/live`);
+  return withApiGuard("getUserBusLive", async () => {
+    const normalizedBusId = String(busId ?? "").trim();
+    if (!normalizedBusId) {
+      throw new Error("Bus ID is required to fetch live status");
+    }
 
-  const raw = response.data as any;
-  const payload = unwrap<any>(raw);
-  return normalizeLive(payload);
+    const response = await apiClient.get<
+      BusLiveStatus | { data?: BusLiveStatus }
+    >(`/api/user/buses/${normalizedBusId}/live`);
+    const safeResponse = assertAxiosSuccess(response, "getUserBusLive");
+
+    const raw = safeResponse.data as any;
+    const payload = unwrap<any>(raw);
+    return normalizeLive(payload);
+  });
 };
 
 export const getAdminRouteById = async (routeId: string) => {
-  const response = await apiClient.get<AdminRoute | { route?: AdminRoute }>(
-    `/api/admin/routes/${routeId}`,
-  );
+  return withApiGuard("getAdminRouteById", async () => {
+    const normalizedRouteId = String(routeId ?? "").trim();
+    if (!normalizedRouteId) {
+      throw new Error("Route ID is required");
+    }
 
-  const raw = response.data as any;
-  const payload = unwrap<any>(raw);
-  const route = payload?.route ?? payload;
+    const response = await apiClient.get<AdminRoute | { route?: AdminRoute }>(
+      `/api/admin/routes/${normalizedRouteId}`,
+    );
+    const safeResponse = assertAxiosSuccess(response, "getAdminRouteById");
 
-  return {
-    id: String(route?.id ?? route?._id ?? routeId),
-    name: String(route?.name ?? "Route"),
-    encodedPolyline: String(route?.encodedPolyline ?? ""),
-    totalDistanceMeters: Number(route?.totalDistanceMeters ?? 0),
-    estimatedDurationSeconds: Number(route?.estimatedDurationSeconds ?? 0),
-    isActive: Boolean(route?.isActive ?? true),
-    createdAt: route?.createdAt,
-    updatedAt: route?.updatedAt,
-  } as AdminRoute;
+    const raw = safeResponse.data as any;
+    const payload = unwrap<any>(raw);
+    const route = asObject(payload?.route ?? payload);
+
+    return {
+      id: String(route?.id ?? route?._id ?? normalizedRouteId),
+      name: String(route?.name ?? "Route"),
+      encodedPolyline: String(route?.encodedPolyline ?? ""),
+      totalDistanceMeters: Number(route?.totalDistanceMeters ?? 0),
+      estimatedDurationSeconds: Number(route?.estimatedDurationSeconds ?? 0),
+      isActive: Boolean(route?.isActive ?? true),
+      createdAt: route?.createdAt,
+      updatedAt: route?.updatedAt,
+    } as AdminRoute;
+  });
 };
 
 export const createUserSubscription = async (
   payload: UserSubscriptionRequest,
 ) => {
-  const response = await apiClient.post<
-    UserSubscription | { data?: UserSubscription }
-  >("/api/user/subscriptions", payload);
-  return unwrap<UserSubscription>(response.data as any);
+  return withApiGuard("createUserSubscription", async () => {
+    const response = await apiClient.post<
+      UserSubscription | { data?: UserSubscription }
+    >("/api/user/subscriptions", payload);
+    const safeResponse = assertAxiosSuccess(response, "createUserSubscription");
+    return unwrap<UserSubscription>(safeResponse.data as any);
+  });
 };
 
 export const getUserSubscriptions = async () => {
-  const response = await apiClient.get<
-    UserSubscription[] | { data?: UserSubscription[] }
-  >("/api/user/subscriptions");
-  const payload = unwrap<UserSubscription[]>(response.data as any);
-  return Array.isArray(payload) ? payload : [];
+  return withApiGuard("getUserSubscriptions", async () => {
+    const response = await apiClient.get<
+      UserSubscription[] | { data?: UserSubscription[] }
+    >("/api/user/subscriptions");
+    const safeResponse = assertAxiosSuccess(response, "getUserSubscriptions");
+    const payload = unwrap<any>(safeResponse.data as any);
+    const list = pickArray(payload);
+
+    return list.filter(
+      (item): item is UserSubscription => Boolean(item && typeof item === "object"),
+    );
+  });
 };
 
 export const deleteUserSubscription = async (subscriptionId: string) => {
-  return apiClient.delete(`/api/user/subscriptions/${subscriptionId}`);
+  return withApiGuard("deleteUserSubscription", async () => {
+    const normalizedId = String(subscriptionId ?? "").trim();
+    if (!normalizedId) {
+      throw new Error("Subscription ID is required");
+    }
+
+    const response = await apiClient.delete(`/api/user/subscriptions/${normalizedId}`);
+    return assertAxiosSuccess(response, "deleteUserSubscription");
+  });
 };
 
 export const patchUserFcmToken = async (fcmToken: string) => {
-  return apiClient.patch("/api/user/profile/fcm-token", { fcmToken });
+  return withApiGuard("patchUserFcmToken", async () => {
+    const normalizedToken = String(fcmToken ?? "").trim();
+    if (!normalizedToken) {
+      throw new Error("FCM token is required");
+    }
+
+    const response = await apiClient.patch("/api/user/profile/fcm-token", {
+      fcmToken: normalizedToken,
+    });
+    return assertAxiosSuccess(response, "patchUserFcmToken");
+  });
 };
 
 export const getUserNotifications = async () => {
-  const response = await apiClient.get<
-    UserNotification[] | { data?: UserNotification[] }
-  >("/api/user/notifications");
-  const payload = unwrap<UserNotification[]>(response.data as any);
-  return Array.isArray(payload) ? payload : [];
+  return withApiGuard("getUserNotifications", async () => {
+    const response = await apiClient.get<
+      UserNotification[] | { data?: UserNotification[] }
+    >("/api/user/notifications");
+    const safeResponse = assertAxiosSuccess(response, "getUserNotifications");
+    const payload = unwrap<any>(safeResponse.data as any);
+    const list = pickArray(payload);
+
+    return list.filter(
+      (item): item is UserNotification => Boolean(item && typeof item === "object"),
+    );
+  });
 };
 
 export const markUserNotificationRead = async (notificationId: string) => {
-  return apiClient.patch(`/api/user/notifications/${notificationId}/read`);
+  return withApiGuard("markUserNotificationRead", async () => {
+    const normalizedId = String(notificationId ?? "").trim();
+    if (!normalizedId) {
+      throw new Error("Notification ID is required");
+    }
+
+    const response = await apiClient.patch(
+      `/api/user/notifications/${normalizedId}/read`,
+    );
+    return assertAxiosSuccess(response, "markUserNotificationRead");
+  });
 };

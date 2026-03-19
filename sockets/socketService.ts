@@ -27,6 +27,22 @@ class SocketService {
   connect(url: string, token?: string): void {
     const normalizedUrl = normalizeSocketUrl(url);
 
+    console.log("[Socket][connect]", {
+      requestedUrl: url || "undefined",
+      normalizedUrl: normalizedUrl || "undefined",
+      path: SOCKET_PATH,
+      hasToken: Boolean(token),
+    });
+
+    if (!normalizedUrl) {
+      console.error("[Socket][connect] Missing backend URL. Set EXPO_PUBLIC_BACKEND_URL.");
+      return;
+    }
+
+    if (/localhost|127\.0\.0\.1/i.test(normalizedUrl)) {
+      console.warn("[Socket][connect] localhost URL on device may fail in production APK");
+    }
+
     if (this.socket) {
       if (this.connectionUrl && normalizedUrl && this.connectionUrl !== normalizedUrl) {
         this.disconnect();

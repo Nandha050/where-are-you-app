@@ -303,7 +303,10 @@ export default function DriverTrackingScreen() {
     try {
       const [activeTrip, routeSnapshot] = await Promise.all([
         getActiveTrip(),
-        getDriverMyRoute().catch(() => null),
+        getDriverMyRoute().catch((routeErr) => {
+          console.warn("[DriverTracking][getDriverMyRoute]", routeErr);
+          return null;
+        }),
       ]);
 
       let trackingAssignment: DriverMeSnapshot;
@@ -333,6 +336,7 @@ export default function DriverTrackingScreen() {
         trip: activeTrip,
       }));
     } catch (err: any) {
+      console.error("[DriverTracking][refreshScreenData]", err);
       setError(
         err?.response?.data?.message ?? err?.message ?? "Failed to load tracking",
       );
@@ -401,7 +405,8 @@ export default function DriverTrackingScreen() {
           latitude: location.latitude,
           longitude: location.longitude,
         });
-      } catch {
+      } catch (locationErr) {
+        console.warn("[DriverTracking][sendCurrentLocation][getCurrentPosition]", locationErr);
         location = null;
       }
     }
@@ -448,6 +453,7 @@ export default function DriverTrackingScreen() {
         return;
       }
 
+      console.error("[DriverTracking][sendCurrentLocation][postMyLocation]", err);
       setUiState((previous) => ({
         ...previous,
         sending: false,
@@ -462,15 +468,21 @@ export default function DriverTrackingScreen() {
       return;
     }
 
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (!permission.granted) {
-      setSendNote("Location permission is required to send live telemetry.");
-      return;
-    }
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        setSendNote("Location permission is required to send live telemetry.");
+        return;
+      }
 
-    const servicesEnabled = await Location.hasServicesEnabledAsync();
-    if (!servicesEnabled) {
-      setSendNote("Enable GPS/location services to continue telemetry.");
+      const servicesEnabled = await Location.hasServicesEnabledAsync();
+      if (!servicesEnabled) {
+        setSendNote("Enable GPS/location services to continue telemetry.");
+        return;
+      }
+    } catch (permissionErr) {
+      console.error("[DriverTracking][startLocationFlow][permissions]", permissionErr);
+      setSendNote("Unable to verify location permissions. Please retry.");
       return;
     }
 
@@ -496,7 +508,8 @@ export default function DriverTrackingScreen() {
         latitude: current.coords.latitude,
         longitude: current.coords.longitude,
       });
-    } catch {
+    } catch (initialReadErr) {
+      console.warn("[DriverTracking][startLocationFlow][initialLocation]", initialReadErr);
       // Keep interval sender active even if initial read fails.
     }
 
@@ -525,7 +538,8 @@ export default function DriverTrackingScreen() {
           });
         },
       );
-    } catch {
+    } catch (watchErr) {
+      console.warn("[DriverTracking][startLocationFlow][watchPosition]", watchErr);
       // Fallback to periodic getCurrentPosition in sender.
     }
 
@@ -577,6 +591,7 @@ export default function DriverTrackingScreen() {
         }
       }
     } catch (err: any) {
+      console.error("[DriverTracking][handleTripAction]", err);
       setError(err?.response?.data?.message ?? err?.message ?? "Unable to update trip");
     } finally {
       setActionLoading(false);

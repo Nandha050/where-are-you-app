@@ -160,9 +160,17 @@ export default function DriverHome() {
       router.push("/(driver)/tracking" as any);
     } catch (err: any) {
       if (isAlreadyActiveTripError(err)) {
-        const current = await getActiveTrip();
-        setActiveTrip(current);
-        router.push("/(driver)/tracking" as any);
+        try {
+          const current = await getActiveTrip();
+          setActiveTrip(current);
+          router.push("/(driver)/tracking" as any);
+        } catch (fallbackErr: any) {
+          setError(
+            fallbackErr?.response?.data?.message ??
+            fallbackErr?.message ??
+            "Trip appears active, but failed to fetch its latest state",
+          );
+        }
       } else {
         setError(
           err?.response?.data?.message ?? err?.message ?? "Unable to start trip",
@@ -188,9 +196,9 @@ export default function DriverHome() {
       if (!latest) {
         setHistory((previous) => [
           {
-            id: activeTrip.id,
+            id: activeTrip?.id ?? new Date().toISOString(),
             endedAt: new Date().toISOString(),
-            status: activeTrip.status,
+            status: activeTrip?.status ?? "COMPLETED",
           },
           ...previous,
         ].slice(0, 8));

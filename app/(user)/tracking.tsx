@@ -258,8 +258,17 @@ export default function UserTrackingScreen() {
 
         if (liveData.encodedPolyline) {
           setRouteEncodedPolyline(liveData.encodedPolyline);
-          const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
-          setPath(decoded.map(([latitude, longitude]) => ({ latitude, longitude })));
+          try {
+            const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
+            setPath(decoded.map(([latitude, longitude]) => ({ latitude, longitude })));
+          } catch (polylineErr) {
+            console.warn("[UserTracking][decodePolyline]", {
+              busId,
+              error: polylineErr,
+            });
+            setRouteEncodedPolyline("");
+            setPath([]);
+          }
         } else {
           setRouteEncodedPolyline("");
 
@@ -282,6 +291,10 @@ export default function UserTrackingScreen() {
           setPath(buildFallbackPath(start, sortedStops, end));
         }
       } catch (err: any) {
+        console.error("[UserTracking][load]", {
+          busId,
+          error: err,
+        });
         setError(
           err?.response?.data?.message ?? err?.message ?? "Failed to load live bus",
         );
@@ -425,7 +438,11 @@ export default function UserTrackingScreen() {
       });
 
       setIsSubscribed(true);
-    } catch {
+    } catch (subscriptionErr) {
+      console.error("[UserTracking][subscribeForAlerts]", {
+        busId,
+        error: subscriptionErr,
+      });
       // Keep tracking view usable if subscription request fails.
     } finally {
       setSubmittingSubscription(false);
@@ -657,10 +674,10 @@ export default function UserTrackingScreen() {
                   <View className="mr-3 items-center" style={{ width: 18 }}>
                     <View
                       className={`h-3.5 w-3.5 rounded-full ${stop.status === "passed"
-                          ? "bg-emerald-500"
-                          : stop.status === "next"
-                            ? "bg-blue-600"
-                            : "bg-amber-400"
+                        ? "bg-emerald-500"
+                        : stop.status === "next"
+                          ? "bg-blue-600"
+                          : "bg-amber-400"
                         }`}
                     />
                     {index < stopsWithStatus.length - 1 ? (
@@ -674,10 +691,10 @@ export default function UserTrackingScreen() {
                     </Text>
                     <Text
                       className={`mt-0.5 text-xs font-semibold ${stop.status === "passed"
-                          ? "text-emerald-600"
-                          : stop.status === "next"
-                            ? "text-blue-700"
-                            : "text-amber-700"
+                        ? "text-emerald-600"
+                        : stop.status === "next"
+                          ? "text-blue-700"
+                          : "text-amber-700"
                         }`}
                     >
                       {stop.status === "passed"

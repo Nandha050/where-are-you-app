@@ -49,8 +49,15 @@ export const useAuth = () => {
     setError(null);
     try {
       const response = await loginMember(credentials);
+      console.log("[Auth][login] Response received", {
+        baseURL: API_BASE_URL,
+        status: response?.status ?? null,
+      });
 
-      const body = response.data as Record<string, any>;
+      const body =
+        response?.data && typeof response.data === "object"
+          ? (response.data as Record<string, any>)
+          : {};
       const nested =
         (body?.data as Record<string, any> | undefined) ??
         (body?.result as Record<string, any> | undefined) ??
@@ -110,6 +117,10 @@ export const useAuth = () => {
       await authStore.setUser(normalizedUser);
       return { success: true as const, data: response.data };
     } catch (err: any) {
+      console.error("[Auth][login] Failed", {
+        baseURL: API_BASE_URL,
+        error: err,
+      });
       const message =
         err.response?.data?.message ||
         (err.request && !err.response

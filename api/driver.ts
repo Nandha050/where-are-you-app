@@ -1,4 +1,4 @@
-import apiClient from "./client";
+import apiClient, { assertAxiosSuccess, logApiError } from "./client";
 import {
     ActiveTrip,
     DriverBus,
@@ -176,6 +176,22 @@ const normalizeTrip = (raw: any): ActiveTrip | null => {
     };
 };
 
+const asObject = (value: unknown): Record<string, any> => {
+    if (value && typeof value === "object") {
+        return value as Record<string, any>;
+    }
+
+    return {};
+};
+
+const withApiGuard = async <T>(scope: string, handler: () => Promise<T>): Promise<T> => {
+    try {
+        return await handler();
+    } catch (error) {
+        throw logApiError(scope, error);
+    }
+};
+
 export type DriverMeSnapshot = {
     driver: DriverProfile | null;
     bus: DriverBus | null;
@@ -190,51 +206,23 @@ export type DriverRouteSnapshot = {
 };
 
 export const getDriverMe = async (): Promise<DriverMeSnapshot> => {
-    const response = await apiClient.get<DriverMeResponse | { data?: DriverMeResponse }>(
-        "/api/driver/me",
-    );
+    return withApiGuard("getDriverMe", async () => {
+        const response = await apiClient.get<DriverMeResponse | { data?: DriverMeResponse }>(
+            "/api/driver/me",
+        );
+        const safeResponse = assertAxiosSuccess(response, "getDriverMe");
 
-    const payload = unwrap<any>(response.data as any);
-    const source = payload?.data ?? payload;
+        const payload = unwrap<any>(safeResponse.data as any);
+        const source = asObject(payload?.data ?? payload);
 
-    const driverSource = source?.driver ?? source?.user ?? source;
-    const driver = pickString(driverSource?.id, driverSource?._id)
-        ? {
-            id: pickString(driverSource?.id, driverSource?._id) as string,
-            name: pickString(driverSource?.name, driverSource?.fullName) ?? "Driver",
-            role: pickString(driverSource?.role) ?? "driver",
-        }
-        : null;
-
-    const bus = normalizeBus(source?.bus ?? source?.assignment?.bus);
-    const route = normalizeRoute(source?.route ?? source?.assignment?.route);
-
-    const rawStops = Array.isArray(source?.stops)
-        ? source.stops
-        : Array.isArray(source?.route?.stops)
-            ? source.route.stops
-            : [];
-
-    const stops = rawStops
-        .map((stop: any) => normalizeStop(stop))
-        .filter((stop: DriverStop | null): stop is DriverStop => Boolean(stop));
-
-    return {
-        driver,
-        bus,
-        route,
-        stops,
-    };
-};
-
-export const getDriverMyRoute = async (): Promise<DriverRouteSnapshot | null> => {
-    try {
-        const response = await apiClient.get<
-            DriverMyRouteResponse | { data?: DriverMyRouteResponse }
-        >("/api/driver/my-route");
-
-        const payload = unwrap<any>(response.data as any);
-        const source = payload?.data ?? payload;
+        const driverSource = asObject(source?.driver ?? source?.user ?? source);
+        const driver = pickString(driverSource?.id, driverSource?._id)
+            ? {
+                id: pickString(driverSource?.id, driverSource?._id) as string,
+                name: pickString(driverSource?.name, driverSource?.fullName) ?? "Driver",
+                role: pickString(driverSource?.role) ?? "driver",
+            }
+            : null;
 
         const bus = normalizeBus(source?.bus ?? source?.assignment?.bus);
         const route = normalizeRoute(source?.route ?? source?.assignment?.route);
@@ -250,54 +238,97 @@ export const getDriverMyRoute = async (): Promise<DriverRouteSnapshot | null> =>
             .filter((stop: DriverStop | null): stop is DriverStop => Boolean(stop));
 
         return {
+            driver,
             bus,
             route,
             stops,
         };
-    } catch (error: any) {
-        if (error?.response?.status === 404) {
-            return null;
-        }
+    });
+};
 
-        throw error;
-    }
+export const getDriverMyRoute = async (): Promise<DriverRouteSnapshot | null> => {
+    return withApiGuard("getDriverMyRoute", async () => {
+        try {
+            const response = await apiClient.get<
+                DriverMyRouteResponse | { data?: DriverMyRouteResponse }
+            >("/api/driver/my-route");
+            const safeResponse = assertAxiosSuccess(response, "getDriverMyRoute");
+
+            const payload = unwrap<any>(safeResponse.data as any);
+            const source = asObject(payload?.data ?? payload);
+
+            const bus = normalizeBus(source?.bus ?? source?.assignment?.bus);
+            const route = normalizeRoute(source?.route ?? source?.assignment?.route);
+
+            const rawStops = Array.isArray(source?.stops)
+                ? source.stops
+                : Array.isArray(source?.route?.stops)
+                    ? source.route.stops
+                    : [];
+
+            const stops = rawStops
+                .map((stop: any) => normalizeStop(stop))
+                .filter((stop: DriverStop | null): stop is DriverStop => Boolean(stop));
+
+            return {
+                bus,
+                route,
+                stops,
+            };
+        } catch (error: any) {
+            if (error?.response?.status === 404) {
+                return null;
+            }
+
+            throw error;
+        }
+    });
 };
 
 export const getActiveTrip = async (): Promise<ActiveTrip | null> => {
-    try {
-        const response = await apiClient.get<ActiveTrip | { data?: ActiveTrip }>(
-            "/api/trip/active",
-        );
+    return withApiGuard("getActiveTrip", async () => {
+        try {
+            const response = await apiClient.get<ActiveTrip | { data?: ActiveTrip }>(
+                "/api/trip/active",
+            );
+            const safeResponse = assertAxiosSuccess(response, "getActiveTrip");
 
-        const payload = unwrap<any>(response.data as any);
-        return normalizeTrip(payload?.trip ?? payload) ?? null;
-    } catch (error: any) {
-        if (error?.response?.status === 404) {
-            return null;
+            const payload = unwrap<any>(safeResponse.data as any);
+            return normalizeTrip(payload?.trip ?? payload) ?? null;
+        } catch (error: any) {
+            if (error?.response?.status === 404) {
+                return null;
+            }
+
+            throw error;
         }
-
-        throw error;
-    }
+    });
 };
 
 export const startTrip = async (): Promise<ActiveTrip | null> => {
-    const response = await apiClient.post<ActiveTrip | { data?: ActiveTrip }>(
-        "/api/trip/start",
-        {},
-    );
+    return withApiGuard("startTrip", async () => {
+        const response = await apiClient.post<ActiveTrip | { data?: ActiveTrip }>(
+            "/api/trip/start",
+            {},
+        );
+        const safeResponse = assertAxiosSuccess(response, "startTrip");
 
-    const payload = unwrap<any>(response.data as any);
-    return normalizeTrip(payload?.trip ?? payload);
+        const payload = unwrap<any>(safeResponse.data as any);
+        return normalizeTrip(payload?.trip ?? payload);
+    });
 };
 
 export const stopTrip = async (): Promise<ActiveTrip | null> => {
-    const response = await apiClient.post<ActiveTrip | { data?: ActiveTrip }>(
-        "/api/trip/stop",
-        {},
-    );
+    return withApiGuard("stopTrip", async () => {
+        const response = await apiClient.post<ActiveTrip | { data?: ActiveTrip }>(
+            "/api/trip/stop",
+            {},
+        );
+        const safeResponse = assertAxiosSuccess(response, "stopTrip");
 
-    const payload = unwrap<any>(response.data as any);
-    return normalizeTrip(payload?.trip ?? payload);
+        const payload = unwrap<any>(safeResponse.data as any);
+        return normalizeTrip(payload?.trip ?? payload);
+    });
 };
 
 export const postMyLocation = async (payload: {
@@ -306,10 +337,13 @@ export const postMyLocation = async (payload: {
     speed: number;
     timestamp: string;
 }): Promise<{ skipped: boolean }> => {
-    const response = await apiClient.post<any>("/api/tracking/me/location", payload);
-    const body = unwrap<any>(response.data as any);
+    return withApiGuard("postMyLocation", async () => {
+        const response = await apiClient.post<any>("/api/tracking/me/location", payload);
+        const safeResponse = assertAxiosSuccess(response, "postMyLocation");
+        const body = unwrap<any>(safeResponse.data as any);
 
-    return {
-        skipped: Boolean(body?.skipped ?? body?.throttled),
-    };
+        return {
+            skipped: Boolean(body?.skipped ?? body?.throttled),
+        };
+    });
 };

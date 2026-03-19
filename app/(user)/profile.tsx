@@ -2,11 +2,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Pressable,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { logoutUser } from "../../api/auth";
@@ -18,12 +18,19 @@ export default function UserProfileScreen() {
   const [fcmToken, setFcmToken] = useState("");
   const [savingToken, setSavingToken] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
 
   const saveToken = async () => {
     if (!fcmToken.trim()) return;
     setSavingToken(true);
+    setTokenError(null);
     try {
       await patchUserFcmToken(fcmToken.trim());
+    } catch (err: any) {
+      console.error("[UserProfile][saveToken]", err);
+      setTokenError(
+        err?.response?.data?.message ?? err?.message ?? "Failed to save FCM token",
+      );
     } finally {
       setSavingToken(false);
     }
@@ -85,6 +92,10 @@ export default function UserProfileScreen() {
               <Text className="text-sm font-bold text-white">Save Token</Text>
             )}
           </Pressable>
+
+          {tokenError ? (
+            <Text className="mt-2 text-xs text-red-600">{tokenError}</Text>
+          ) : null}
         </View>
 
         <Pressable

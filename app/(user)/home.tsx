@@ -1,6 +1,6 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Redirect, router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   ImageBackground,
@@ -79,10 +79,13 @@ const extractSavedBus = (
   subscription: UserSubscription,
 ): SavedBusCard | null => {
   const busId = subscription.busId ?? subscription.bus?.id;
+  const subscriptionId = subscription.id;
+
+  if (!subscriptionId) return null;
   if (!busId) return null;
 
   return {
-    subscriptionId: subscription.id,
+    subscriptionId,
     busId,
     numberPlate: subscription.bus?.numberPlate ?? "BUS",
     routeName: subscription.bus?.routeName ?? "Route",
@@ -131,7 +134,11 @@ export default function UserHome() {
               tripStatus: live.trip?.status ?? live.tripStatus ?? null,
               lastUpdated: live.lastUpdated ?? null,
             };
-          } catch {
+          } catch (liveErr) {
+            console.warn("[UserHome][getUserBusLive]", {
+              busId: item.busId,
+              error: liveErr,
+            });
             return item;
           }
         }),
@@ -141,7 +148,8 @@ export default function UserHome() {
       setNotificationCount(
         notifications.filter((n) => !(n.isRead ?? Boolean(n.readAt))).length,
       );
-    } catch {
+    } catch (loadErr) {
+      console.error("[UserHome][loadSavedAndNotifications]", loadErr);
       // Backend unreachable – keep UI usable with empty data
       setSavedBuses([]);
       setNotificationCount(0);
@@ -149,10 +157,6 @@ export default function UserHome() {
       setLoadingSaved(false);
     }
   }, [isAuthenticated]);
-
-  useEffect(() => {
-    loadSavedAndNotifications();
-  }, [loadSavedAndNotifications]);
 
   useFocusEffect(
     useCallback(() => {
@@ -185,9 +189,14 @@ export default function UserHome() {
         return [numberPlate, ...deduped].slice(0, 8);
       });
     } catch (error: any) {
+      console.error("[UserHome][doSearch]", {
+        numberPlate,
+        error,
+      });
       setSearchError(
         error?.response?.data?.message ?? error?.message ?? "Search failed",
       );
+      setResults([]);
     } finally {
       setSearching(false);
     }
@@ -200,6 +209,10 @@ export default function UserHome() {
 
   const toggleSaved = async (bus: BusSearchResult) => {
     try {
+      if (!bus?.busId) {
+        return;
+      }
+
       const existing = savedMap.get(bus.busId);
 
       if (existing) {
@@ -226,7 +239,11 @@ export default function UserHome() {
           ...prev,
         ]);
       }
-    } catch {
+    } catch (saveErr) {
+      console.error("[UserHome][toggleSaved]", {
+        busId: bus?.busId,
+        error: saveErr,
+      });
       // best-effort – keep UI usable
     }
   };
