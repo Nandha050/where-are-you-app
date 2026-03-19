@@ -1,12 +1,12 @@
 import apiClient from "./client";
 import {
-    AdminRoute,
-    BusLiveStatus,
-    BusSearchResult,
-    DriverStop,
-    UserNotification,
-    UserSubscription,
-    UserSubscriptionRequest,
+  AdminRoute,
+  BusLiveStatus,
+  BusSearchResult,
+  DriverStop,
+  UserNotification,
+  UserSubscription,
+  UserSubscriptionRequest,
 } from "./types";
 
 const unwrap = <T>(data: T | { data?: T } | { result?: T }): T => {
@@ -105,6 +105,25 @@ const normalizeSearchItem = (item: any): BusSearchResult | null => {
     return null;
   }
 
+  const rawTripStatus =
+    item?.trip?.status ??
+    item?.tripStatus ??
+    item?.bus?.tripStatus ??
+    null;
+
+  const normalizedTripStatus =
+    typeof rawTripStatus === "string" && rawTripStatus.trim().length
+      ? rawTripStatus.trim().toUpperCase()
+      : null;
+
+  const lastUpdatedRaw =
+    item?.lastUpdated ??
+    item?.updatedAt ??
+    item?.trip?.updatedAt ??
+    item?.trip?.lastUpdated ??
+    item?.bus?.lastUpdated ??
+    null;
+
   return {
     busId: String(busId),
     numberPlate: String(numberPlate),
@@ -112,6 +131,11 @@ const normalizeSearchItem = (item: any): BusSearchResult | null => {
       item?.routeName ?? item?.route?.name ?? item?.bus?.routeName ?? "Route",
     ),
     routeId: item?.routeId ?? item?.route?.id ?? item?.route?._id ?? undefined,
+    tripStatus: normalizedTripStatus,
+    lastUpdated:
+      typeof lastUpdatedRaw === "string" && lastUpdatedRaw.trim().length
+        ? lastUpdatedRaw
+        : null,
     isActive: Boolean(item?.isActive ?? item?.active ?? item?.isLive),
   };
 };
@@ -198,34 +222,50 @@ const normalizeLive = (payload: any): BusLiveStatus => {
   return {
     busId: String(
       payload?.busId ??
-        bus?.id ??
-        bus?._id ??
-        payload?.id ??
-        payload?._id ??
-        "",
+      bus?.id ??
+      bus?._id ??
+      payload?.id ??
+      payload?._id ??
+      "",
     ),
     numberPlate: String(
       bus?.numberPlate ??
-        payload?.numberPlate ??
-        payload?.plateNumber ??
-        payload?.bus?.numberPlate ??
-        "",
+      payload?.numberPlate ??
+      payload?.plateNumber ??
+      payload?.bus?.numberPlate ??
+      "",
     ),
     routeName: String(
       route?.name ??
-        payload?.routeName ??
-        payload?.route?.name ??
-        payload?.bus?.routeName ??
-        "Route",
+      payload?.routeName ??
+      payload?.route?.name ??
+      payload?.bus?.routeName ??
+      "Route",
     ),
     routeId: rawRouteId ? String(rawRouteId) : undefined,
+    trip: {
+      id: String(
+        payload?.trip?.id ??
+        payload?.trip?._id ??
+        bus?.trip?.id ??
+        bus?.trip?._id ??
+        "",
+      ) || undefined,
+      status: String(
+        payload?.trip?.status ??
+        bus?.trip?.status ??
+        bus?.tripStatus ??
+        payload?.tripStatus ??
+        "",
+      ) || undefined,
+    },
     // Prefer the stored route polyline (admin-authored, passes through all stops)
     // over any top-level field that may have been recomputed with traffic avoidance.
     encodedPolyline: String(
       route?.encodedPolyline ??
-        payload?.route?.encodedPolyline ??
-        payload?.encodedPolyline ??
-        "",
+      payload?.route?.encodedPolyline ??
+      payload?.encodedPolyline ??
+      "",
     ),
     routeStartLat,
     routeStartLng,

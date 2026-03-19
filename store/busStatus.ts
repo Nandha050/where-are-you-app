@@ -5,13 +5,12 @@ export const FLEET_STATUS_VALUES = [
 ] as const;
 
 export const TRIP_STATUS_VALUES = [
-    "NOT_SCHEDULED",
-    "TRIP_NOT_STARTED",
-    "ON_TRIP",
+    "PENDING",
+    "STARTED",
+    "RUNNING",
+    "STOPPED",
     "COMPLETED",
-    "DELAYED",
     "CANCELLED",
-    "MAINTENANCE_HOLD",
 ] as const;
 
 export const TRACKING_STATUS_VALUES = [
@@ -46,13 +45,12 @@ export const FLEET_STATUS_LABELS: Record<FleetStatus, string> = {
 };
 
 export const TRIP_STATUS_LABELS: Record<TripStatus, string> = {
-    NOT_SCHEDULED: "Not Scheduled",
-    TRIP_NOT_STARTED: "Trip Not Started",
-    ON_TRIP: "On Trip",
+    PENDING: "Ready to start",
+    STARTED: "Trip started",
+    RUNNING: "Bus moving",
+    STOPPED: "Bus stopped",
     COMPLETED: "Completed",
-    DELAYED: "Delayed",
     CANCELLED: "Cancelled",
-    MAINTENANCE_HOLD: "Maintenance Hold",
 };
 
 export const TRACKING_STATUS_LABELS: Record<TrackingStatus, string> = {
@@ -175,14 +173,11 @@ export const getStatusVariant = (
     if (statusType === "tripStatus") {
         const normalized = normalizeTripStatus(statusCode);
 
-        if (normalized === "ON_TRIP") return "success";
-        if (normalized === "DELAYED" || normalized === "MAINTENANCE_HOLD") {
-            return "warning";
-        }
+        if (normalized === "STARTED" || normalized === "RUNNING") return "success";
         if (normalized === "CANCELLED") return "danger";
         if (
-            normalized === "TRIP_NOT_STARTED" ||
-            normalized === "NOT_SCHEDULED" ||
+            normalized === "PENDING" ||
+            normalized === "STOPPED" ||
             normalized === "COMPLETED"
         ) {
             return "neutral";

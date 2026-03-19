@@ -4,9 +4,9 @@ import { NativeModules, Platform } from "react-native";
 import authStore from "../store/auth";
 
 const RAW_API_URL =
-  process.env.EXPO_PUBLIC_API_URL ||
+  process.env.EXPO_PUBLIC_BACKEND_URL ||
   process.env.BACKEND_URL ||
-  "http://localhost:3000";
+  "https://where-are-you-km9g.onrender.com";
 const RAW_API_HOST = process.env.EXPO_PUBLIC_API_HOST;
 const API_TIMEOUT = Number(process.env.EXPO_PUBLIC_API_TIMEOUT || 10000);
 

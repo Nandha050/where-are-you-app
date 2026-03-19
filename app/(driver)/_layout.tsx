@@ -23,6 +23,14 @@ export default function DriverLayout() {
     return <Redirect href="/(driver)/login" />;
   }
 
+  if (isAuthenticated && isLoginRoute) {
+    return (
+      <Redirect
+        href={user?.role === "driver" ? "/(driver)/home" : "/(user)/home"}
+      />
+    );
+  }
+
   if (isAuthenticated && user?.role !== "driver") {
     return <Redirect href="/(user)/home" />;
   }

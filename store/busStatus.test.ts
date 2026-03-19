@@ -21,9 +21,9 @@ describe("status normalizers", () => {
     });
 
     it("normalizes trip statuses with case-insensitive and trimmed inputs", () => {
-        expect(normalizeTripStatus(" on_trip ")).toBe("ON_TRIP");
-        expect(normalizeTripStatus("trip_not_started")).toBe("TRIP_NOT_STARTED");
-        expect(normalizeTripStatus("maintenance hold")).toBe("MAINTENANCE_HOLD");
+        expect(normalizeTripStatus(" pending ")).toBe("PENDING");
+        expect(normalizeTripStatus("started")).toBe("STARTED");
+        expect(normalizeTripStatus("running")).toBe("RUNNING");
     });
 
     it("normalizes tracking statuses with case-insensitive and trimmed inputs", () => {
@@ -41,13 +41,12 @@ describe("status labels", () => {
     });
 
     it("maps canonical labels for trip statuses", () => {
-        expect(getTripStatusLabel("NOT_SCHEDULED")).toBe("Not Scheduled");
-        expect(getTripStatusLabel("TRIP_NOT_STARTED")).toBe("Trip Not Started");
-        expect(getTripStatusLabel("ON_TRIP")).toBe("On Trip");
+        expect(getTripStatusLabel("PENDING")).toBe("Ready to start");
+        expect(getTripStatusLabel("STARTED")).toBe("Trip started");
+        expect(getTripStatusLabel("RUNNING")).toBe("Bus moving");
+        expect(getTripStatusLabel("STOPPED")).toBe("Bus stopped");
         expect(getTripStatusLabel("COMPLETED")).toBe("Completed");
-        expect(getTripStatusLabel("DELAYED")).toBe("Delayed");
         expect(getTripStatusLabel("CANCELLED")).toBe("Cancelled");
-        expect(getTripStatusLabel("MAINTENANCE_HOLD")).toBe("Maintenance Hold");
     });
 
     it("renders both OFFLINE and NO_SIGNAL as No Signal", () => {
@@ -69,9 +68,9 @@ describe("status labels", () => {
 describe("status variants", () => {
     it("maps recommended semantic variants", () => {
         expect(getStatusVariant("trackingStatus", "RUNNING")).toBe("success");
-        expect(getStatusVariant("tripStatus", "ON_TRIP")).toBe("success");
+        expect(getStatusVariant("tripStatus", "STARTED")).toBe("success");
+        expect(getStatusVariant("tripStatus", "RUNNING")).toBe("success");
 
-        expect(getStatusVariant("tripStatus", "DELAYED")).toBe("warning");
         expect(getStatusVariant("fleetStatus", "MAINTENANCE")).toBe("warning");
 
         expect(getStatusVariant("tripStatus", "CANCELLED")).toBe("danger");
@@ -89,7 +88,7 @@ describe("socket status merge", () => {
     it("does not update state when payload is marked skipped", () => {
         const previous = createBusStatusStateFromRestSnapshot({
             trackingStatus: "RUNNING",
-            tripStatus: "ON_TRIP",
+            tripStatus: "RUNNING",
             status: "RUNNING",
             lastUpdated: "2026-03-17T16:29:35.478Z",
         });
@@ -104,14 +103,14 @@ describe("socket status merge", () => {
 
         expect(merged).toBe(previous);
         expect(merged.trackingStatus.code).toBe("RUNNING");
-        expect(merged.tripStatus.code).toBe("ON_TRIP");
+        expect(merged.tripStatus.code).toBe("RUNNING");
         expect(merged.lastUpdated).toBe("2026-03-17T16:29:35.478Z");
     });
 
     it("updates changed status fields when skipped is false", () => {
         const previous = createBusStatusStateFromRestSnapshot({
             trackingStatus: "IDLE",
-            tripStatus: "TRIP_NOT_STARTED",
+            tripStatus: "PENDING",
             status: "IDLE",
             lastUpdated: "2026-03-17T16:29:35.478Z",
         });
@@ -119,7 +118,7 @@ describe("socket status merge", () => {
         const merged = mergeBusStatusFromSocketUpdate(previous, {
             skipped: false,
             trackingStatus: "running",
-            tripStatus: "on_trip",
+            tripStatus: "running",
             status: "running",
             timestamp: "2026-03-17T16:30:35.478Z",
         });
@@ -127,8 +126,8 @@ describe("socket status merge", () => {
         expect(merged).not.toBe(previous);
         expect(merged.trackingStatus.code).toBe("RUNNING");
         expect(merged.trackingStatus.label).toBe("Running");
-        expect(merged.tripStatus.code).toBe("ON_TRIP");
-        expect(merged.tripStatus.label).toBe("On Trip");
+        expect(merged.tripStatus.code).toBe("RUNNING");
+        expect(merged.tripStatus.label).toBe("Bus moving");
         expect(merged.rawStatus).toBe("running");
         expect(merged.lastUpdated).toBe("2026-03-17T16:30:35.478Z");
     });
@@ -136,7 +135,7 @@ describe("socket status merge", () => {
     it("returns same reference when socket payload has no status changes", () => {
         const previous = createBusStatusStateFromRestSnapshot({
             trackingStatus: "RUNNING",
-            tripStatus: "ON_TRIP",
+            tripStatus: "RUNNING",
             status: "RUNNING",
             lastUpdated: "2026-03-17T16:29:35.478Z",
         });
@@ -144,7 +143,7 @@ describe("socket status merge", () => {
         const merged = mergeBusStatusFromSocketUpdate(previous, {
             skipped: false,
             trackingStatus: "RUNNING",
-            tripStatus: "ON_TRIP",
+            tripStatus: "RUNNING",
             status: "RUNNING",
             timestamp: "2026-03-17T16:29:35.478Z",
         });

@@ -166,8 +166,14 @@ export default function RouteMap({
   // Decode the stored route polyline — never calls Directions API
   const path = useMemo<LatLng[]>(() => {
     if (encodedPolyline) {
-      const decoded = polylineLib.decode(encodedPolyline) as [number, number][];
-      return decoded.map(([lat, lng]) => ({ lat, lng }));
+      try {
+        const decoded = polylineLib.decode(encodedPolyline) as [number, number][];
+        if (decoded.length > 0) {
+          return decoded.map(([lat, lng]) => ({ lat, lng }));
+        }
+      } catch {
+        // Fallback to pre-decoded coordinates when backend polyline is malformed.
+      }
     }
     return coordinates.map(({ latitude, longitude }) => ({ lat: latitude, lng: longitude }));
   }, [encodedPolyline, coordinates]);
@@ -311,7 +317,7 @@ export default function RouteMap({
   if (!GOOGLE_MAPS_API_KEY) {
     return (
       <SvgFallback
-        coordinates={coordinates}
+        coordinates={path.map((p) => ({ latitude: p.lat, longitude: p.lng }))}
         stops={stops}
         currentLocation={currentLocation}
       />

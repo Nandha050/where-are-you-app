@@ -33,15 +33,19 @@ export default function RouteMap({
   // Falls back to coordinatesProp only when no encodedPolyline is available.
   const coordinates = useMemo<Coord[]>(() => {
     if (encodedPolyline) {
-      const decoded = polylineLib.decode(encodedPolyline) as [
-        number,
-        number,
-      ][];
-      if (decoded.length > 0) {
-        return decoded.map(([latitude, longitude]) => ({
-          latitude,
-          longitude,
-        }));
+      try {
+        const decoded = polylineLib.decode(encodedPolyline) as [
+          number,
+          number,
+        ][];
+        if (decoded.length > 0) {
+          return decoded.map(([latitude, longitude]) => ({
+            latitude,
+            longitude,
+          }));
+        }
+      } catch {
+        // Fallback to upstream coordinates when backend polyline is malformed.
       }
     }
     return coordinatesProp;

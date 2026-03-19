@@ -15,6 +15,7 @@ import { BusSearchResult, UserSubscription } from "../../api/types";
 import {
   createUserSubscription,
   deleteUserSubscription,
+  getUserBusLive,
   getUserNotifications,
   getUserSubscriptions,
   searchUserBuses,
@@ -27,12 +28,52 @@ interface SavedBusCard {
   numberPlate: string;
   routeName: string;
   routeId?: string;
+  tripStatus?: string | null;
+  lastUpdated?: string | null;
   nextStop?: string;
   etaLabel?: string;
 }
 
 const FALLBACK_MAP_IMAGE =
   "https://images.unsplash.com/photo-1577086664693-894d8405334a?auto=format&fit=crop&w=1400&q=80";
+
+const USER_TRIP_STATUS_LABELS: Record<string, string> = {
+  PENDING: "Start soon",
+  STARTED: "Trip started",
+  RUNNING: "Bus moving",
+  STOPPED: "Bus stopped",
+  COMPLETED: "Trip ended",
+  CANCELLED: "Trip cancelled",
+};
+
+const getTripStatusLabel = (status: unknown): string => {
+  if (typeof status !== "string" || !status.trim()) {
+    return "No active trip";
+  }
+
+  const normalized = status.trim().toUpperCase();
+  return USER_TRIP_STATUS_LABELS[normalized] ?? normalized;
+};
+
+const getFreshnessLabel = (timestamp?: string | null): string => {
+  if (!timestamp) {
+    return "No updates yet";
+  }
+
+  const parsed = new Date(timestamp).getTime();
+  if (!Number.isFinite(parsed)) {
+    return "No updates yet";
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+
+  if (elapsedSeconds < 60) {
+    return `Updated ${elapsedSeconds}s ago`;
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  return `Updated ${elapsedMinutes}m ago`;
+};
 
 const extractSavedBus = (
   subscription: UserSubscription,
@@ -46,6 +87,8 @@ const extractSavedBus = (
     numberPlate: subscription.bus?.numberPlate ?? "BUS",
     routeName: subscription.bus?.routeName ?? "Route",
     routeId: subscription.bus?.routeId,
+    tripStatus: null,
+    lastUpdated: null,
     nextStop: subscription.stop?.name,
     etaLabel: subscription.notifyOnNearStop ? "Near Stop" : "Bus Start",
   };
@@ -79,7 +122,22 @@ export default function UserHome() {
         .map(extractSavedBus)
         .filter((item): item is SavedBusCard => Boolean(item));
 
-      setSavedBuses(mapped);
+      const enriched = await Promise.all(
+        mapped.map(async (item) => {
+          try {
+            const live = await getUserBusLive(item.busId);
+            return {
+              ...item,
+              tripStatus: live.trip?.status ?? live.tripStatus ?? null,
+              lastUpdated: live.lastUpdated ?? null,
+            };
+          } catch {
+            return item;
+          }
+        }),
+      );
+
+      setSavedBuses(enriched);
       setNotificationCount(
         notifications.filter((n) => !(n.isRead ?? Boolean(n.readAt))).length,
       );
@@ -302,6 +360,16 @@ export default function UserHome() {
                         <Text className="text-sm text-slate-500">
                           Plate: {bus.numberPlate}
                         </Text>
+                        <View className="mt-2 flex-row items-center gap-2">
+                          <View className="rounded-full bg-blue-50 px-2.5 py-1">
+                            <Text className="text-[11px] font-semibold text-blue-700">
+                              {getTripStatusLabel(bus.tripStatus)}
+                            </Text>
+                          </View>
+                          <Text className="text-[11px] text-slate-500">
+                            {getFreshnessLabel(bus.lastUpdated)}
+                          </Text>
+                        </View>
                       </View>
                       <Pressable onPress={() => toggleSaved(bus)}>
                         <Ionicons
@@ -396,6 +464,16 @@ export default function UserHome() {
                       Plate: {item.numberPlate}
                       {item.nextStop ? ` · Next: ${item.nextStop}` : ""}
                     </Text>
+                    <View className="mt-2 flex-row items-center gap-2">
+                      <View className="rounded-full bg-blue-50 px-2.5 py-1">
+                        <Text className="text-[11px] font-semibold text-blue-700">
+                          {getTripStatusLabel(item.tripStatus)}
+                        </Text>
+                      </View>
+                      <Text className="text-[11px] text-slate-500">
+                        {getFreshnessLabel(item.lastUpdated)}
+                      </Text>
+                    </View>
                   </View>
                   <View className="items-end gap-1">
                     <View className="rounded-full bg-emerald-100 px-2.5 py-1">

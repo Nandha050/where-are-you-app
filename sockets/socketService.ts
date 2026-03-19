@@ -22,6 +22,7 @@ class SocketService {
   private socket: Socket | null = null;
   private activeBusRooms = new Set<string>();
   private connectionUrl: string | null = null;
+  private reconnectAttemptListeners = new Set<(attempt: unknown) => void>();
 
   connect(url: string, token?: string): void {
     const normalizedUrl = normalizeSocketUrl(url);
@@ -74,6 +75,7 @@ class SocketService {
 
     socket.io.on("reconnect_attempt", (attempt: unknown) => {
       console.log("Socket reconnect attempt", attempt);
+      this.reconnectAttemptListeners.forEach((listener) => listener(attempt));
     });
 
     socket.io.on("reconnect", (attempt: unknown) => {
@@ -136,6 +138,10 @@ class SocketService {
     this.socket?.on(event, callback);
   }
 
+  onReconnectAttempt(callback: (attempt: unknown) => void): void {
+    this.reconnectAttemptListeners.add(callback);
+  }
+
   off(event: string, callback?: (...args: any[]) => void): void {
     if (callback) {
       this.socket?.off(event, callback);
@@ -143,6 +149,10 @@ class SocketService {
     }
 
     this.socket?.off(event);
+  }
+
+  offReconnectAttempt(callback: (attempt: unknown) => void): void {
+    this.reconnectAttemptListeners.delete(callback);
   }
 
   isConnected(): boolean {

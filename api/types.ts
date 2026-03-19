@@ -16,6 +16,24 @@ export interface LoginResponse {
   };
 }
 
+export type TripStatus =
+  | "PENDING"
+  | "STARTED"
+  | "RUNNING"
+  | "STOPPED"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export interface ActiveTrip {
+  id: string;
+  status: TripStatus | string;
+  busId?: string;
+  routeId?: string;
+  startedAt?: string;
+  endedAt?: string;
+  updatedAt?: string;
+}
+
 export interface DriverBus {
   id: string;
   numberPlate: string;
@@ -62,6 +80,19 @@ export interface DriverMyRouteResponse {
   stops: DriverStop[];
 }
 
+export interface DriverProfile {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export interface DriverMeResponse {
+  driver?: DriverProfile;
+  bus?: DriverBus | null;
+  route?: DriverRoute | null;
+  stops?: DriverStop[];
+}
+
 /* ── User-facing types ─────────────────────────────── */
 
 export interface BusSearchResult {
@@ -69,6 +100,8 @@ export interface BusSearchResult {
   numberPlate: string;
   routeName: string;
   routeId?: string;
+  tripStatus?: TripStatus | string | null;
+  lastUpdated?: string | null;
   isActive: boolean;
 }
 
@@ -77,6 +110,10 @@ export interface BusLiveStatus {
   numberPlate: string;
   routeName: string;
   routeId?: string;
+  trip?: {
+    id?: string;
+    status?: TripStatus | string;
+  };
   encodedPolyline: string;
   routeStartLat?: number | null;
   routeStartLng?: number | null;

@@ -1,4 +1,4 @@
-import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
 import * as Location from "expo-location";
 import { router, useLocalSearchParams } from "expo-router";
@@ -19,21 +19,13 @@ import {
   getUserSubscriptions,
 } from "../../api/user";
 import RouteMap from "../../components/RouteMap";
-import StatusBadge from "../../components/StatusBadge";
 import socketService from "../../sockets/socketService";
 import authStore from "../../store/auth";
-import {
-  createBusStatusStateFromRestSnapshot,
-  mergeBusStatusFromSocketUpdate,
-  type BusStatusState,
-} from "../../store/busStatus";
 
 type Coord = {
   latitude: number;
   longitude: number;
 };
-
-type StopStatus = "passed" | "next" | "upcoming";
 
 type OrderedStop = {
   id?: string;
@@ -41,13 +33,28 @@ type OrderedStop = {
   latitude: number;
   longitude: number;
   sequenceOrder?: number;
+  isPassed?: boolean;
   distanceFromCurrentText?: string;
-  etaFromCurrentText?: string;
   distanceFromCurrentMeters?: number;
+  etaFromCurrentText?: string;
   etaFromCurrentSeconds?: number;
   segmentDistanceText?: string;
   segmentEtaText?: string;
-  isPassed?: boolean;
+};
+
+type StopStatus = "passed" | "next" | "upcoming";
+
+type StopWithStatus = OrderedStop & {
+  status: StopStatus;
+};
+
+const TRIP_STATUS_LABELS: Record<string, string> = {
+  PENDING: "Start soon",
+  STARTED: "Trip started",
+  RUNNING: "Bus moving",
+  STOPPED: "Bus stopped",
+  COMPLETED: "Trip ended",
+  CANCELLED: "Trip cancelled",
 };
 
 const toStopCoord = (stop: DriverStop): OrderedStop | null => {
@@ -74,13 +81,13 @@ const toStopCoord = (stop: DriverStop): OrderedStop | null => {
     latitude,
     longitude,
     sequenceOrder: stop.sequenceOrder,
+    isPassed: stop.isPassed,
     distanceFromCurrentText: stop.distanceFromCurrentText,
-    etaFromCurrentText: stop.etaFromCurrentText,
     distanceFromCurrentMeters: stop.distanceFromCurrentMeters,
+    etaFromCurrentText: stop.etaFromCurrentText,
     etaFromCurrentSeconds: stop.etaFromCurrentSeconds,
     segmentDistanceText: stop.segmentDistanceText,
     segmentEtaText: stop.segmentEtaText,
-    isPassed: stop.isPassed,
   };
 };
 
@@ -109,13 +116,31 @@ const buildFallbackPath = (
 
   const deduped: Coord[] = [];
   points.forEach((point) => {
-    const prev = deduped[deduped.length - 1];
-    if (!prev || !sameCoord(prev, point)) {
+    const previous = deduped[deduped.length - 1];
+    if (!previous || !sameCoord(previous, point)) {
       deduped.push(point);
     }
   });
 
   return deduped;
+};
+
+const normalizeTripStatus = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const getTripStatusLabel = (status: unknown): string => {
+  const normalized = normalizeTripStatus(status);
+  if (!normalized) {
+    return "Ready to start";
+  }
+
+  return TRIP_STATUS_LABELS[normalized] ?? normalized;
 };
 
 const formatEtaFromSeconds = (seconds?: number): string | null => {
@@ -142,6 +167,25 @@ const formatDistanceFromMeters = (meters?: number): string | null => {
   return `${Math.round(meters)} m`;
 };
 
+const getFreshnessLabel = (lastUpdated?: string | null): string => {
+  if (!lastUpdated) {
+    return "No recent update";
+  }
+
+  const parsed = new Date(lastUpdated).getTime();
+  if (!Number.isFinite(parsed)) {
+    return "No recent update";
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  if (elapsedSeconds < 60) {
+    return `Updated ${elapsedSeconds}s ago`;
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  return `Updated ${elapsedMinutes}m ago`;
+};
+
 export default function UserTrackingScreen() {
   const params = useLocalSearchParams<{
     busId: string | string[];
@@ -157,11 +201,11 @@ export default function UserTrackingScreen() {
   const [path, setPath] = useState<Coord[]>([]);
   const [routeEncodedPolyline, setRouteEncodedPolyline] = useState("");
   const [currentLocation, setCurrentLocation] = useState<Coord | null>(null);
+  const [connection, setConnection] = useState<"live" | "offline">(
+    socketService.isConnected() ? "live" : "offline",
+  );
   const [submittingSubscription, setSubmittingSubscription] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
-  const [statusState, setStatusState] = useState<BusStatusState>(() =>
-    createBusStatusStateFromRestSnapshot({}),
-  );
 
   const orderedStops = useMemo<OrderedStop[]>(() => {
     return (live?.stops ?? [])
@@ -174,71 +218,6 @@ export default function UserTrackingScreen() {
       });
   }, [live?.stops]);
 
-  const stopsWithStatus = useMemo<
-    (OrderedStop & { status: StopStatus })[]
-  >(() => {
-    if (!orderedStops.length) return [];
-
-    const hasBackendPassState = orderedStops.some(
-      (stop) => typeof stop.isPassed === "boolean",
-    );
-
-    if (hasBackendPassState) {
-      const firstNotPassedIndex = orderedStops.findIndex(
-        (stop) => stop.isPassed !== true,
-      );
-
-      return orderedStops.map((stop, index) => ({
-        ...stop,
-        status:
-          stop.isPassed === true
-            ? "passed"
-            : index === (firstNotPassedIndex < 0 ? 0 : firstNotPassedIndex)
-              ? "next"
-              : "upcoming",
-      }));
-    }
-
-    const normalizedNextStop = live?.nextStop?.trim().toLowerCase();
-    let nextStopIndex = normalizedNextStop
-      ? orderedStops.findIndex(
-          (stop) => stop.name?.trim().toLowerCase() === normalizedNextStop,
-        )
-      : -1;
-
-    if (nextStopIndex < 0 && currentLocation) {
-      let bestDistance = Number.POSITIVE_INFINITY;
-      let bestIndex = 0;
-
-      orderedStops.forEach((stop, index) => {
-        const dLat = stop.latitude - currentLocation.latitude;
-        const dLng = stop.longitude - currentLocation.longitude;
-        const distanceSq = dLat * dLat + dLng * dLng;
-
-        if (distanceSq < bestDistance) {
-          bestDistance = distanceSq;
-          bestIndex = index;
-        }
-      });
-
-      nextStopIndex = bestIndex;
-    }
-
-    if (nextStopIndex < 0) {
-      nextStopIndex = 0;
-    }
-
-    return orderedStops.map((stop, index) => ({
-      ...stop,
-      status:
-        index < nextStopIndex
-          ? "passed"
-          : index === nextStopIndex
-            ? "next"
-            : "upcoming",
-    }));
-  }, [orderedStops, live?.nextStop, currentLocation]);
-
   useEffect(() => {
     if (!busId) {
       setLoading(false);
@@ -249,6 +228,7 @@ export default function UserTrackingScreen() {
     const load = async () => {
       setLoading(true);
       setError(null);
+
       try {
         const [liveData, subscriptions] = await Promise.all([
           getUserBusLive(String(busId)),
@@ -256,17 +236,8 @@ export default function UserTrackingScreen() {
         ]);
 
         setLive(liveData);
-        setStatusState(
-          createBusStatusStateFromRestSnapshot({
-            fleetStatus: liveData.fleetStatus,
-            tripStatus: liveData.tripStatus,
-            trackingStatus: liveData.trackingStatus,
-            status: liveData.status,
-            lastUpdated: liveData.lastUpdated,
-          }),
-        );
         setIsSubscribed(
-          subscriptions.some((s) => String(s.busId) === String(busId)),
+          subscriptions.some((subscription) => String(subscription.busId) === String(busId)),
         );
 
         if (liveData.currentLat != null && liveData.currentLng != null) {
@@ -276,9 +247,7 @@ export default function UserTrackingScreen() {
           });
         }
 
-        let encodedPolyline = liveData.encodedPolyline;
-
-        const orderedStopsFromLive = (liveData.stops ?? [])
+        const sortedStops = (liveData.stops ?? [])
           .map((stop) => toStopCoord(stop))
           .filter((stop): stop is OrderedStop => Boolean(stop))
           .sort((a, b) => {
@@ -287,69 +256,70 @@ export default function UserTrackingScreen() {
             return aOrder - bOrder;
           });
 
-        if (encodedPolyline) {
-          setRouteEncodedPolyline(encodedPolyline);
-          const decoded = polyline.decode(encodedPolyline) as [
-            number,
-            number,
-          ][];
-          setPath(
-            decoded.map(([latitude, longitude]) => ({ latitude, longitude })),
-          );
+        if (liveData.encodedPolyline) {
+          setRouteEncodedPolyline(liveData.encodedPolyline);
+          const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
+          setPath(decoded.map(([latitude, longitude]) => ({ latitude, longitude })));
         } else {
           setRouteEncodedPolyline("");
 
           const start =
             liveData.routeStartLat != null && liveData.routeStartLng != null
               ? {
-                  latitude: liveData.routeStartLat,
-                  longitude: liveData.routeStartLng,
-                }
+                latitude: liveData.routeStartLat,
+                longitude: liveData.routeStartLng,
+              }
               : null;
+
           const end =
             liveData.routeEndLat != null && liveData.routeEndLng != null
               ? {
-                  latitude: liveData.routeEndLat,
-                  longitude: liveData.routeEndLng,
-                }
+                latitude: liveData.routeEndLat,
+                longitude: liveData.routeEndLng,
+              }
               : null;
 
-          setPath(buildFallbackPath(start, orderedStopsFromLive, end));
+          setPath(buildFallbackPath(start, sortedStops, end));
         }
       } catch (err: any) {
         setError(
-          err?.response?.data?.message ??
-            err?.message ??
-            "Failed to load live bus",
+          err?.response?.data?.message ?? err?.message ?? "Failed to load live bus",
         );
       } finally {
         setLoading(false);
       }
     };
 
-    load();
+    void load();
   }, [busId]);
 
   useEffect(() => {
-    if (!busId) return;
+    if (!busId) {
+      return;
+    }
 
-    const token = authStore.token ?? undefined;
-    socketService.connect(API_BASE_URL, token);
+    socketService.connect(API_BASE_URL, authStore.token ?? undefined);
 
-    socketService
-      .waitUntilConnected(5000)
-      .then((ok) => {
-        if (!ok) return;
-        socketService.emit("joinBusRoom", String(busId));
-      })
-      .catch(() => {
-        // no-op
-      });
+    const onConnect = () => {
+      setConnection("live");
+      socketService.joinBusRoom(String(busId));
+    };
+
+    const onDisconnect = () => {
+      setConnection("offline");
+    };
 
     const onBusLocationUpdate = (payload: unknown) => {
       const event = payload as {
-        busId?: string;
-        bus?: { id?: string; _id?: string };
+        busId?: string | number;
+        bus?: { id?: string | number; _id?: string | number };
+        trip?: { status?: string };
+        tripStatus?: string;
+        nextStop?: string;
+        nextStopEta?: string;
+        estimatedArrival?: string;
+        etaToDestinationText?: string;
+        timestamp?: string;
         location?: {
           latitude?: number;
           longitude?: number;
@@ -360,25 +330,21 @@ export default function UserTrackingScreen() {
         longitude?: number;
         lat?: number;
         lng?: number;
-        nextStop?: string;
-        estimatedArrival?: string;
-        trackingStatus?: string;
-        tripStatus?: string;
-        status?: string;
-        timestamp?: string;
-        skipped?: boolean;
       };
 
       const eventBusId =
         event.busId ?? event.bus?.id ?? event.bus?._id ?? undefined;
 
-      if (eventBusId && String(eventBusId) !== String(busId)) return;
+      if (eventBusId != null && String(eventBusId) !== String(busId)) {
+        return;
+      }
 
       const latitude =
         event.latitude ??
         event.lat ??
         event.location?.latitude ??
         event.location?.lat;
+
       const longitude =
         event.longitude ??
         event.lng ??
@@ -389,54 +355,52 @@ export default function UserTrackingScreen() {
         setCurrentLocation({ latitude, longitude });
       }
 
-      setStatusState((previous) =>
-        mergeBusStatusFromSocketUpdate(previous, {
-          trackingStatus: event.trackingStatus,
-          tripStatus: event.tripStatus,
-          status: event.status,
-          timestamp: event.timestamp,
-          skipped: event.skipped,
-        }),
-      );
+      setLive((previous) => {
+        if (!previous) {
+          return previous;
+        }
 
-      setLive((prev) =>
-        prev
-          ? {
-            ...prev,
-            currentLat: latitude ?? prev.currentLat,
-            currentLng: longitude ?? prev.currentLng,
-            nextStop: event.nextStop ?? prev.nextStop,
-            estimatedArrival: event.estimatedArrival ?? prev.estimatedArrival,
-            trackingStatus:
-              event.skipped || event.trackingStatus == null
-                ? prev.trackingStatus
-                : event.trackingStatus,
-            tripStatus:
-              event.skipped || event.tripStatus == null
-                ? prev.tripStatus
-                : event.tripStatus,
-            status:
-              event.skipped || event.status == null
-                ? prev.status
-                : event.status,
-            lastUpdated:
-              event.skipped || event.timestamp == null
-                ? prev.lastUpdated
-                : event.timestamp,
-          }
-          : prev,
-      );
+        return {
+          ...previous,
+          currentLat:
+            typeof latitude === "number" ? latitude : previous.currentLat,
+          currentLng:
+            typeof longitude === "number" ? longitude : previous.currentLng,
+          tripStatus:
+            normalizeTripStatus(event.trip?.status ?? event.tripStatus) ??
+            previous.tripStatus,
+          nextStop: event.nextStop ?? previous.nextStop,
+          estimatedArrival:
+            event.nextStopEta ?? event.estimatedArrival ?? previous.estimatedArrival,
+          etaToDestinationText:
+            event.etaToDestinationText ?? previous.etaToDestinationText,
+          lastUpdated: event.timestamp ?? previous.lastUpdated,
+        };
+      });
     };
 
+    socketService.on("connect", onConnect);
+    socketService.on("disconnect", onDisconnect);
     socketService.on("busLocationUpdate", onBusLocationUpdate);
 
+    if (socketService.isConnected()) {
+      onConnect();
+    } else {
+      setConnection("offline");
+    }
+
     return () => {
-      socketService.off("busLocationUpdate");
+      socketService.off("connect", onConnect);
+      socketService.off("disconnect", onDisconnect);
+      socketService.off("busLocationUpdate", onBusLocationUpdate);
+      socketService.leaveBusRoom(String(busId));
     };
   }, [busId]);
 
   const subscribeForAlerts = async () => {
-    if (!busId || submittingSubscription || isSubscribed) return;
+    if (!busId || submittingSubscription || isSubscribed) {
+      return;
+    }
 
     setSubmittingSubscription(true);
     try {
@@ -462,86 +426,136 @@ export default function UserTrackingScreen() {
 
       setIsSubscribed(true);
     } catch {
-      // keep view usable even if subscription fails
+      // Keep tracking view usable if subscription request fails.
     } finally {
       setSubmittingSubscription(false);
     }
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView className="flex-1 items-center justify-center bg-[#F2F4F8]">
-        <ActivityIndicator size="large" color="#1847BA" />
-      </SafeAreaView>
-    );
-  }
-
-  if (error) {
-    return (
-      <SafeAreaView className="flex-1 items-center justify-center bg-[#F2F4F8] px-8">
-        <MaterialCommunityIcons name="bus-alert" size={56} color="#EF4444" />
-        <Text className="mt-4 text-center text-[20px] font-semibold text-red-600">
-          {error}
-        </Text>
-      </SafeAreaView>
-    );
-  }
-
-  const nextStop =
-    live?.nextStop ??
-    stopsWithStatus.find((stop) => stop.status === "next")?.name ??
-    "-";
   const eta =
     live?.etaToDestinationText ??
     live?.estimatedArrival ??
     formatEtaFromSeconds(live?.etaToDestinationSeconds) ??
     formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
     "-";
-  const scheduled =
-    live?.distanceToDestinationText ??
-    formatDistanceFromMeters(live?.distanceToDestinationMeters) ??
+
+  const tripStatusLabel = getTripStatusLabel(live?.trip?.status ?? live?.tripStatus);
+  const connectionLabel = connection === "live" ? "Live" : "Offline";
+  const freshnessLabel = getFreshnessLabel(live?.lastUpdated);
+
+  const nextStopName =
+    live?.nextStop ??
+    orderedStops.find((stop) => typeof stop.etaFromCurrentSeconds === "number")?.name ??
+    orderedStops[0]?.name ??
     "-";
-  const totalDistanceText =
-    live?.totalDistanceText ??
-    formatDistanceFromMeters(live?.totalDistanceMeters) ??
+
+  const nextStopEta =
+    orderedStops.find((stop) => stop.name === nextStopName)?.etaFromCurrentText ??
+    formatEtaFromSeconds(
+      orderedStops.find((stop) => stop.name === nextStopName)?.etaFromCurrentSeconds,
+    ) ??
+    live?.estimatedArrival ??
     "-";
-  const estimatedDurationText =
-    live?.estimatedDurationText ??
-    formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
-    "-";
+
+  const stopsWithStatus = useMemo<StopWithStatus[]>(() => {
+    if (!orderedStops.length) {
+      return [];
+    }
+
+    const hasPassState = orderedStops.some((stop) => typeof stop.isPassed === "boolean");
+
+    if (hasPassState) {
+      const firstNotPassed = orderedStops.findIndex((stop) => stop.isPassed !== true);
+      const nextIndex = firstNotPassed < 0 ? 0 : firstNotPassed;
+
+      return orderedStops.map((stop, index) => ({
+        ...stop,
+        status:
+          stop.isPassed === true
+            ? "passed"
+            : index === nextIndex
+              ? "next"
+              : "upcoming",
+      }));
+    }
+
+    const normalizedNextStop = live?.nextStop?.trim().toLowerCase();
+    const nextByName = normalizedNextStop
+      ? orderedStops.findIndex((stop) => stop.name?.trim().toLowerCase() === normalizedNextStop)
+      : -1;
+
+    if (nextByName >= 0) {
+      return orderedStops.map((stop, index) => ({
+        ...stop,
+        status: index < nextByName ? "passed" : index === nextByName ? "next" : "upcoming",
+      }));
+    }
+
+    if (!currentLocation) {
+      return orderedStops.map((stop, index) => ({
+        ...stop,
+        status: index === 0 ? "next" : "upcoming",
+      }));
+    }
+
+    let nearestIndex = 0;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    orderedStops.forEach((stop, index) => {
+      const dLat = stop.latitude - currentLocation.latitude;
+      const dLng = stop.longitude - currentLocation.longitude;
+      const distanceScore = dLat * dLat + dLng * dLng;
+
+      if (distanceScore < nearestDistance) {
+        nearestDistance = distanceScore;
+        nearestIndex = index;
+      }
+    });
+
+    return orderedStops.map((stop, index) => ({
+      ...stop,
+      status: index < nearestIndex ? "passed" : index === nearestIndex ? "next" : "upcoming",
+    }));
+  }, [currentLocation, live?.nextStop, orderedStops]);
+
+  if (loading) {
+    return (
+      <SafeAreaView className="flex-1 items-center justify-center bg-slate-50">
+        <ActivityIndicator size="large" color="#1d4ed8" />
+      </SafeAreaView>
+    );
+  }
+
+  if (error) {
+    return (
+      <SafeAreaView className="flex-1 items-center justify-center bg-slate-50 px-8">
+        <MaterialCommunityIcons name="bus-alert" size={56} color="#ef4444" />
+        <Text className="mt-4 text-center text-lg font-semibold text-red-600">
+          {error}
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView className="flex-1 bg-[#F2F4F8]">
-      {/* Header */}
-      <View className="flex-row items-center px-4 py-3 bg-white border-b border-slate-200">
-        <Pressable onPress={() => router.back()} className="mr-3 p-1">
-          <Ionicons name="arrow-back" size={24} color="#0F172A" />
+    <SafeAreaView className="flex-1 bg-slate-100">
+      <View className="flex-row items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+        <Pressable onPress={() => router.back()} className="h-10 w-10 items-center justify-center rounded-xl bg-slate-100">
+          <Ionicons name="arrow-back" size={20} color="#0f172a" />
         </Pressable>
-        <Text
-          className="flex-1 text-base font-extrabold text-slate-900"
-          numberOfLines={1}
-        >
-          {params.plate
-            ? `Bus ${params.plate} Live Tracking`
-            : "Bus Live Tracking"}
+
+        <Text className="flex-1 px-2 text-center text-base font-extrabold text-slate-900" numberOfLines={1}>
+          Bus {live?.numberPlate || params.plate || "-"}
         </Text>
-        <Pressable
-          onPress={() => router.push("/(user)/alerts" as any)}
-          className="mr-2"
-        >
-          <Ionicons name="notifications-outline" size={22} color="#1847BA" />
-        </Pressable>
-        <Pressable>
-          <Ionicons
-            name="information-circle-outline"
-            size={24}
-            color="#334155"
-          />
-        </Pressable>
+
+        <View className={`rounded-full px-3 py-1 ${connection === "live" ? "bg-emerald-100" : "bg-slate-200"}`}>
+          <Text className={`text-xs font-bold ${connection === "live" ? "text-emerald-700" : "text-slate-600"}`}>
+            {connectionLabel}
+          </Text>
+        </View>
       </View>
 
-      {/* Map */}
-      <View className="h-[280px] w-full">
+      <View className="h-[300px] w-full bg-slate-200">
         {path.length > 1 ? (
           <RouteMap
             coordinates={path}
@@ -551,265 +565,149 @@ export default function UserTrackingScreen() {
               latitude: stop.latitude,
               longitude: stop.longitude,
               name: stop.name,
-              status: stop.status,
               sequenceOrder: stop.sequenceOrder,
+              status: stop.status,
             }))}
           />
         ) : (
-          <View className="flex-1 items-center justify-center bg-slate-200">
-            <Text className="text-sm text-slate-500">
-              Route unavailable for this bus
-            </Text>
+          <View className="flex-1 items-center justify-center">
+            <Text className="text-sm text-slate-600">Live route unavailable</Text>
           </View>
         )}
-
-        <View className="absolute right-3 top-20 gap-2">
-          <View className="h-10 w-10 items-center justify-center rounded-xl bg-white shadow-sm">
-            <Feather name="crosshair" size={18} color="#334155" />
-          </View>
-          <View className="h-10 w-10 items-center justify-center rounded-xl bg-white shadow-sm">
-            <Ionicons name="add" size={20} color="#334155" />
-          </View>
-          <View className="h-10 w-10 items-center justify-center rounded-xl bg-white shadow-sm">
-            <Ionicons name="remove" size={20} color="#334155" />
-          </View>
-        </View>
       </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{
-          paddingHorizontal: 16,
-          paddingTop: 12,
-          paddingBottom: 10,
-        }}
+        contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
       >
-        {/* ETA card */}
-        <View className="rounded-2xl border border-slate-200 bg-white p-4">
-          <View className="flex-row items-center">
-            <View className="h-12 w-12 items-center justify-center rounded-xl bg-slate-100">
-              <Ionicons name="time" size={22} color="#1847BA" />
-            </View>
-            <View className="ml-3 flex-1">
-              <Text className="text-xs text-slate-500">Next Stop Arrival</Text>
-              <Text className="mt-0.5 text-lg font-extrabold text-[#1847BA]">
-                {eta}
+        <View className="rounded-2xl bg-white p-4">
+          <View className="flex-row items-center justify-between">
+            <View>
+              <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Trip Status
+              </Text>
+              <Text className="mt-1 text-lg font-extrabold text-slate-900">
+                {tripStatusLabel}
               </Text>
             </View>
-            <View className="items-end">
-              <Text className="text-xs text-slate-500">Remaining</Text>
-              <Text className="text-base font-bold text-slate-900">
-                {scheduled}
+            <MaterialCommunityIcons name="bus-clock" size={28} color="#1d4ed8" />
+          </View>
+
+          <Text className="mt-2 text-xs text-slate-500">{freshnessLabel}</Text>
+
+          <View className="mt-4 flex-row items-center justify-between rounded-xl bg-slate-100 px-3 py-3">
+            <View>
+              <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                ETA to destination
+              </Text>
+              <Text className="mt-1 text-base font-bold text-slate-900">{eta}</Text>
+            </View>
+            <View>
+              <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Route
+              </Text>
+              <Text className="mt-1 text-base font-bold text-slate-900" numberOfLines={1}>
+                {live?.routeName || params.route || "-"}
               </Text>
             </View>
           </View>
-          <View className="mt-3 border-t border-slate-200 pt-3">
-            <Text className="text-xs font-semibold text-slate-600">
-              Route Summary
+
+          <View className="mt-3 rounded-xl bg-blue-50 px-3 py-3">
+            <Text className="text-xs font-semibold uppercase tracking-wider text-blue-700">
+              Next Stop
             </Text>
-            <View className="mt-2 flex-row justify-between gap-3">
-              <View className="flex-1">
-                <Text className="text-xs text-slate-500">Total Distance</Text>
-                <Text className="text-sm font-bold text-slate-900">
-                  {totalDistanceText}
-                </Text>
-              </View>
-              <View className="flex-1">
-                <Text className="text-xs text-slate-500">Est. Duration</Text>
-                <Text className="text-sm font-bold text-slate-900">
-                  {estimatedDurationText}
-                </Text>
-              </View>
-              <View className="flex-1">
-                <Text className="text-xs text-slate-500">Remaining</Text>
-                <Text className="text-sm font-bold text-slate-900">
-                  {live?.distanceToDestinationText ||
-                    (live?.distanceToDestinationMeters
-                      ? `${(live.distanceToDestinationMeters / 1000).toFixed(1)} km`
-                      : "-")}
-                </Text>
-              </View>
-            </View>
+            <Text className="mt-1 text-base font-bold text-slate-900">{nextStopName}</Text>
+            <Text className="mt-1 text-sm text-slate-600">ETA: {nextStopEta}</Text>
           </View>
-          <View className="mt-3 flex-row items-center justify-between border-t border-slate-200 pt-3">
-            <Text className="text-xs text-slate-600">Next: {nextStop}</Text>
-            <Pressable
-              className={`rounded-full px-3 py-1.5 flex-row items-center gap-1.5 ${
-                isSubscribed ? "bg-emerald-100" : "bg-[#E3EBFF]"
+
+          <Pressable
+            className={`mt-4 flex-row items-center justify-center rounded-xl px-4 py-3 ${isSubscribed ? "bg-emerald-100" : "bg-blue-700"
               }`}
-              onPress={subscribeForAlerts}
-              disabled={submittingSubscription || isSubscribed}
-            >
-              {submittingSubscription ? (
-                <ActivityIndicator size="small" color="#1847BA" />
-              ) : (
-                <>
-                  <Ionicons
-                    name={
-                      isSubscribed ? "notifications" : "notifications-outline"
-                    }
-                    size={14}
-                    color={isSubscribed ? "#15803D" : "#1847BA"}
-                  />
-                  <Text
-                    className={`text-[11px] font-bold ${
-                      isSubscribed ? "text-emerald-700" : "text-[#1847BA]"
-                    }`}
-                  >
-                    {isSubscribed ? "Subscribed" : "Subscribe"}
-                  </Text>
-                </>
-              )}
-            </Pressable>
-          </View>
-          <View className="mt-3 flex-row flex-wrap gap-2">
-            <StatusBadge
-              statusType="trackingStatus"
-              statusCode={statusState.trackingStatus.code}
-              size="md"
-            />
-            <StatusBadge
-              statusType="tripStatus"
-              statusCode={statusState.tripStatus.code}
-              size="md"
-            />
-            <StatusBadge
-              statusType="fleetStatus"
-              statusCode={statusState.fleetStatus.code}
-              size="md"
-            />
-          </View>
+            onPress={subscribeForAlerts}
+            disabled={submittingSubscription || isSubscribed}
+          >
+            {submittingSubscription ? (
+              <ActivityIndicator size="small" color="#1d4ed8" />
+            ) : (
+              <>
+                <Ionicons
+                  name={isSubscribed ? "notifications" : "notifications-outline"}
+                  size={18}
+                  color={isSubscribed ? "#047857" : "white"}
+                />
+                <Text className={`ml-2 text-sm font-bold ${isSubscribed ? "text-emerald-700" : "text-white"}`}>
+                  {isSubscribed ? "Subscribed" : "Subscribe for alerts"}
+                </Text>
+              </>
+            )}
+          </Pressable>
         </View>
 
-        {/* Stop progress */}
-        <View className="mt-3 rounded-2xl border border-slate-200 bg-white">
-          <Text className="px-4 py-3 text-xs font-extrabold tracking-widest text-slate-900 border-b border-slate-200">
-            CURRENT PROGRESS
+        <View className="mt-3 rounded-2xl bg-white p-4">
+          <Text className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
+            Current Progress
           </Text>
 
-          <View className="px-4 py-4">
-            {stopsWithStatus.length === 0 ? (
-              <Text className="text-sm text-slate-500">
-                No stop data available
-              </Text>
-            ) : (
-              stopsWithStatus.map((stop, index) => {
-                const isNext = stop.status === "next";
-                const isPassed = stop.status === "passed";
-                const stopDistance =
-                  stop.distanceFromCurrentText ??
-                  formatDistanceFromMeters(stop.distanceFromCurrentMeters) ??
-                  "distance --";
-                const stopEta =
-                  stop.etaFromCurrentText ??
-                  formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
-                  "ETA --";
-                const segmentDetail =
-                  stop.segmentDistanceText || stop.segmentEtaText
-                    ? `From previous stop: ${stop.segmentDistanceText ?? "-"}${
-                        stop.segmentDistanceText && stop.segmentEtaText
-                          ? " • "
-                          : ""
-                      }${stop.segmentEtaText ?? "-"}`
-                    : null;
-
-                return (
-                  <View
-                    key={
-                      stop.id ??
-                      `${stop.name ?? "stop"}-${index}-${stop.sequenceOrder ?? "na"}`
-                    }
-                    className="flex-row mb-3"
-                  >
-                    <View className="mr-3 items-center" style={{ width: 16 }}>
-                      <View
-                        className={`h-3.5 w-3.5 rounded-full border-2 ${
-                          isNext
-                            ? "border-[#1847BA] bg-[#1847BA]"
-                            : isPassed
-                              ? "border-emerald-500 bg-emerald-500"
-                              : "border-slate-300 bg-white"
+          {stopsWithStatus.length === 0 ? (
+            <Text className="text-sm text-slate-500">No stops available.</Text>
+          ) : (
+            <View>
+              {stopsWithStatus.map((stop, index) => (
+                <View key={stop.id ?? `${stop.name}-${index}`} className="mb-3 flex-row">
+                  <View className="mr-3 items-center" style={{ width: 18 }}>
+                    <View
+                      className={`h-3.5 w-3.5 rounded-full ${stop.status === "passed"
+                          ? "bg-emerald-500"
+                          : stop.status === "next"
+                            ? "bg-blue-600"
+                            : "bg-amber-400"
                         }`}
-                      />
-                      {index < stopsWithStatus.length - 1 && (
-                        <View className="mt-1 w-0.5 h-10 bg-slate-200" />
-                      )}
-                    </View>
-
-                    <View className="flex-1">
-                      <Text
-                        className={`text-sm ${
-                          isNext
-                            ? "font-extrabold text-slate-900"
-                            : "text-slate-600"
-                        }`}
-                      >
-                        {(stop.sequenceOrder != null
-                          ? `${stop.sequenceOrder}. `
-                          : "") + (stop.name ?? `Stop ${index + 1}`)}
-                      </Text>
-                      <Text className="mt-1 text-xs text-slate-600">
-                        {`From bus: ${stopDistance} • ${stopEta}`}
-                      </Text>
-                      {segmentDetail ? (
-                        <Text className="text-[11px] text-slate-500">
-                          {segmentDetail}
-                        </Text>
-                      ) : null}
-                      <Text
-                        className={`text-xs mt-1 ${
-                          isNext
-                            ? "font-semibold text-[#1847BA]"
-                            : isPassed
-                              ? "text-slate-400"
-                              : "text-slate-500"
-                        }`}
-                      >
-                        {isNext
-                          ? "Next Stop"
-                          : isPassed
-                            ? "Passed"
-                            : "Upcoming"}
-                      </Text>
-                    </View>
+                    />
+                    {index < stopsWithStatus.length - 1 ? (
+                      <View className="mt-1 h-8 w-0.5 bg-slate-200" />
+                    ) : null}
                   </View>
-                );
-              })
-            )}
-          </View>
+
+                  <View className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
+                    <Text className="text-sm font-semibold text-slate-900" numberOfLines={1}>
+                      {(stop.sequenceOrder ?? index + 1) + ". " + (stop.name || "Stop")}
+                    </Text>
+                    <Text
+                      className={`mt-0.5 text-xs font-semibold ${stop.status === "passed"
+                          ? "text-emerald-600"
+                          : stop.status === "next"
+                            ? "text-blue-700"
+                            : "text-amber-700"
+                        }`}
+                    >
+                      {stop.status === "passed"
+                        ? "Passed"
+                        : stop.status === "next"
+                          ? "Next Stop"
+                          : "Upcoming"}
+                    </Text>
+                    <Text className="mt-1 text-xs text-slate-600">
+                      {`From bus: ${stop.distanceFromCurrentText ??
+                        formatDistanceFromMeters(stop.distanceFromCurrentMeters) ??
+                        "distance --"
+                        } • ${stop.etaFromCurrentText ??
+                        formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
+                        "ETA --"
+                        }`}
+                    </Text>
+                    {stop.segmentDistanceText || stop.segmentEtaText ? (
+                      <Text className="mt-0.5 text-[11px] text-slate-500">
+                        {`From previous: ${stop.segmentDistanceText ?? "-"}${stop.segmentDistanceText && stop.segmentEtaText ? " • " : ""
+                          }${stop.segmentEtaText ?? "-"}`}
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
       </ScrollView>
-
-      {/* Bottom navigation */}
-      <View className="flex-row items-center justify-around border-t border-slate-200 bg-white py-2.5">
-        <Pressable
-          className="items-center"
-          onPress={() => router.replace("/(user)/home" as any)}
-        >
-          <Ionicons name="home-outline" size={22} color="#94A3B8" />
-          <Text className="mt-0.5 text-[11px] font-bold tracking-wide text-slate-400">
-            HOME
-          </Text>
-        </Pressable>
-        <Pressable
-          className="items-center"
-          onPress={() => router.push("/(user)/alerts" as any)}
-        >
-          <Ionicons name="notifications-outline" size={22} color="#94A3B8" />
-          <Text className="mt-0.5 text-[11px] font-bold tracking-wide text-slate-400">
-            ALERTS
-          </Text>
-        </Pressable>
-        <Pressable
-          className="items-center"
-          onPress={() => router.push("/(user)/profile" as any)}
-        >
-          <Ionicons name="person-outline" size={22} color="#94A3B8" />
-          <Text className="mt-0.5 text-[11px] font-bold tracking-wide text-slate-400">
-            PROFILE
-          </Text>
-        </Pressable>
-      </View>
     </SafeAreaView>
   );
 }

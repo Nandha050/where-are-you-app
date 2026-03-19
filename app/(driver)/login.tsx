@@ -1,39 +1,29 @@
 import {
-    Entypo,
-    Feather,
-    FontAwesome5,
-    Ionicons,
-    MaterialCommunityIcons,
+  Entypo,
+  Feather,
+  FontAwesome5,
+  Ionicons,
+  MaterialCommunityIcons,
 } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Pressable,
-    ScrollView,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Image,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../../hooks/useAuth";
-import authStore from "../../store/auth";
 
 export default function DriverLoginScreen() {
   const [employeeId, setEmployeeId] = useState("");
   const [password, setPassword] = useState("");
   const [secureText, setSecureText] = useState(true);
   const [role, setRole] = useState<"user" | "driver">("driver");
-  const { login, loading, error, isAuthenticated, isHydrated } = useAuth();
-
-  useEffect(() => {
-    if (isHydrated && isAuthenticated) {
-      const target =
-        authStore.user?.role === "user" ? "/(user)/home" : "/(driver)/home";
-      router.replace(target as any);
-    }
-  }, [isHydrated, isAuthenticated]);
+  const { login, loading, error } = useAuth();
 
   const roleOptions = useMemo(
     () => [
@@ -125,17 +115,15 @@ export default function DriverLoginScreen() {
                 return (
                   <Pressable
                     key={option.key}
-                    className={`flex-1 items-center rounded-xl border px-4 py-3 ${
-                      isActive
+                    className={`flex-1 items-center rounded-xl border px-4 py-3 ${isActive
                         ? "border-blue-700 bg-blue-50"
                         : "border-slate-200 bg-white"
-                    }`}
+                      }`}
                     onPress={() => setRole(option.key as "user" | "driver")}
                   >
                     <Text
-                      className={`text-sm font-semibold ${
-                        isActive ? "text-blue-700" : "text-slate-600"
-                      }`}
+                      className={`text-sm font-semibold ${isActive ? "text-blue-700" : "text-slate-600"
+                        }`}
                     >
                       {option.label}
                     </Text>
@@ -162,16 +150,11 @@ export default function DriverLoginScreen() {
           <Pressable
             className="mt-8 flex-row items-center justify-center rounded-xl bg-blue-700 py-4"
             onPress={async () => {
-              const result = await login({
+              await login({
                 role,
                 memberId: employeeId,
                 password,
               });
-              if (result.success) {
-                const target =
-                  role === "user" ? "/(user)/home" : "/(driver)/home";
-                router.replace(target as any);
-              }
             }}
             disabled={loading || !employeeId || !password}
           >
