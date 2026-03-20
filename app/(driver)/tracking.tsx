@@ -195,8 +195,9 @@ const buildPathFromAssignment = (assignment: DriverMeSnapshot): {
   stops: StopMarker[];
 } => {
   const routePath = decodeRoute(assignment.route?.encodedPolyline);
+  const sourceStops = Array.isArray(assignment.stops) ? assignment.stops : [];
 
-  const mappedStops: (StopMarker | null)[] = assignment.stops.map((stop, index) => {
+  const mappedStops: (StopMarker | null)[] = sourceStops.map((stop, index) => {
     const latitude =
       typeof stop.lat === "number"
         ? stop.lat
@@ -264,9 +265,9 @@ export default function DriverTrackingScreen() {
 
   const { isAuthenticated, isHydrated, token } = useAuth();
   const {
-    requestForegroundPermission,
-    hasServicesEnabled,
+    ensureForegroundAccess,
     getCurrentPosition,
+    getCurrentPositionSafe,
     watchPosition,
   } = useLocation();
 
@@ -403,10 +404,20 @@ export default function DriverTrackingScreen() {
 
     if (!location) {
       try {
-        const current = await getCurrentPosition("driver_tracking_send_current", {
+        const current = await getCurrentPositionSafe("driver_tracking_send_current", {
           accuracy: Location.Accuracy.High,
           mayShowUserSettingsDialog: true,
         });
+
+        if (!current) {
+          setSendNote("Unable to read GPS right now. Retrying with the next update.");
+          sendingRef.current = false;
+          setUiState((previous) => ({
+            ...previous,
+            sending: false,
+          }));
+          return;
+        }
 
         if (!isAccurateEnough(current.coords.accuracy ?? null)) {
           sendingRef.current = false;
@@ -505,7 +516,7 @@ export default function DriverTrackingScreen() {
     } finally {
       sendingRef.current = false;
     }
-  }, [assignedBusId, getCurrentPosition, stopLocationFlow, uiState.trip]);
+  }, [assignedBusId, getCurrentPositionSafe, stopLocationFlow, uiState.trip]);
 
   const startLocationFlow = useCallback(async () => {
     if (!uiState.trip || !assignedBusId || sendTimerRef.current) {
@@ -513,15 +524,24 @@ export default function DriverTrackingScreen() {
     }
 
     try {
-      const permission = await requestForegroundPermission("driver_tracking_start_flow");
-      if (!permission.granted) {
-        setSendNote("Location permission is required to send live telemetry.");
-        return;
-      }
+      const readiness = await ensureForegroundAccess("driver_tracking_start_flow", {
+        showAlerts: true,
+      });
 
-      const servicesEnabled = await hasServicesEnabled("driver_tracking_start_flow");
-      if (!servicesEnabled) {
-        setSendNote("Enable GPS/location services to continue telemetry.");
+      console.log("[DriverTracking][location][readiness]", {
+        ok: readiness.ok,
+        reason: readiness.reason,
+        servicesEnabled: readiness.servicesEnabled ?? null,
+        permissionGranted: readiness.permission?.granted ?? null,
+      });
+
+      if (!readiness.ok) {
+        if (readiness.reason === "services-disabled") {
+          setSendNote("Location services are OFF. Turn on GPS to continue telemetry.");
+          return;
+        }
+
+        setSendNote("Location permission is required to send live telemetry.");
         return;
       }
     } catch (permissionErr) {
@@ -613,7 +633,7 @@ export default function DriverTrackingScreen() {
     sendTimerRef.current = setInterval(() => {
       void sendCurrentLocation();
     }, 5000);
-  }, [assignedBusId, getCurrentPosition, hasServicesEnabled, requestForegroundPermission, sendCurrentLocation, token, uiState.trip, watchPosition]);
+  }, [assignedBusId, ensureForegroundAccess, getCurrentPosition, sendCurrentLocation, token, uiState.trip, watchPosition]);
 
   const handleTripAction = useCallback(async () => {
     if (actionLoading) {
@@ -979,24 +999,23 @@ export default function DriverTrackingScreen() {
         </View>
 
         <View className="mt-4 h-72 overflow-hidden rounded-2xl bg-slate-200">
-          {mapPath.length > 0 ? (
-            <RouteMap
-              coordinates={mapPath}
-              encodedPolyline={routeEncodedPolyline || undefined}
-              currentLocation={currentLocation ?? undefined}
-              stops={stopsWithStatus.map((stop) => ({
-                latitude: stop.latitude,
-                longitude: stop.longitude,
-                name: stop.name,
-                sequenceOrder: stop.sequenceOrder,
-                status: stop.status,
-              }))}
-            />
-          ) : (
-            <View className="flex-1 items-center justify-center">
-              <Text className="text-sm text-slate-600">Route map unavailable</Text>
+          <RouteMap
+            coordinates={mapPath ?? []}
+            encodedPolyline={routeEncodedPolyline || undefined}
+            currentLocation={currentLocation ?? undefined}
+            stops={stopsWithStatus.map((stop) => ({
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+              name: stop.name,
+              sequenceOrder: stop.sequenceOrder,
+              status: stop.status,
+            }))}
+          />
+          {mapPath.length === 0 && !currentLocation && stopsWithStatus.length === 0 ? (
+            <View className="absolute inset-0 items-center justify-center bg-slate-200/70">
+              <Text className="text-sm text-slate-600">Route map unavailable. Live updates will appear when data arrives.</Text>
             </View>
-          )}
+          ) : null}
         </View>
 
         <View className="mt-4 rounded-2xl bg-white p-4">

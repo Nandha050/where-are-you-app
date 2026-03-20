@@ -77,6 +77,14 @@ function SvgFallback({
       ...(currentLocation ? [currentLocation] : []),
     ];
 
+    if (!allPoints.length) {
+      return {
+        routePoints: [],
+        stopPoints: [],
+        currentPoint: null,
+      };
+    }
+
     const lats = allPoints.map((p) => p.latitude);
     const lngs = allPoints.map((p) => p.longitude);
 
@@ -162,6 +170,7 @@ export default function RouteMap({
   encodedPolyline,
 }: RouteMapProps) {
   const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+  const fallbackCenter: LatLng = { lat: 17.385, lng: 78.4867 };
 
   // Decode the stored route polyline — never calls Directions API
   const path = useMemo<LatLng[]>(() => {
@@ -196,14 +205,14 @@ export default function RouteMap({
 
   // Initialize map and draw the stored-route polyline
   useEffect(() => {
-    if (!mapsReady || !mapDivRef.current || path.length === 0) return;
+    if (!mapsReady || !mapDivRef.current) return;
 
     const g = (window as any).google;
 
     // Create map only once
     if (!mapRef.current) {
       mapRef.current = new g.maps.Map(mapDivRef.current, {
-        center: path[Math.floor(path.length / 2)],
+        center: path[Math.floor(path.length / 2)] ?? fallbackCenter,
         zoom: 12,
         disableDefaultUI: true,
         zoomControl: true,
@@ -214,45 +223,52 @@ export default function RouteMap({
     // Replace the route polyline (drawn from the stored encodedPolyline — exact admin route)
     if (routePolylineRef.current) {
       routePolylineRef.current.setMap(null);
+      routePolylineRef.current = null;
     }
-    routePolylineRef.current = new g.maps.Polyline({
-      path,
-      geodesic: true,
-      strokeColor: "#1a73e8",
-      strokeOpacity: 1.0,
-      strokeWeight: 4,
-    });
-    routePolylineRef.current.setMap(mapRef.current);
+    if (path.length > 1) {
+      routePolylineRef.current = new g.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: "#1a73e8",
+        strokeOpacity: 1.0,
+        strokeWeight: 4,
+      });
+      routePolylineRef.current.setMap(mapRef.current);
+    }
 
     // Start/end markers
     endpointMarkersRef.current.start?.setMap(null);
     endpointMarkersRef.current.end?.setMap(null);
-    endpointMarkersRef.current.start = new g.maps.Marker({
-      position: path[0],
-      map: mapRef.current,
-      title: "Start",
-      icon: {
-        path: g.maps.SymbolPath.CIRCLE,
-        scale: 7,
-        fillColor: "#22c55e",
-        fillOpacity: 1,
-        strokeColor: "#ffffff",
-        strokeWeight: 2,
-      },
-    });
-    endpointMarkersRef.current.end = new g.maps.Marker({
-      position: path[path.length - 1],
-      map: mapRef.current,
-      title: "Destination",
-      icon: {
-        path: g.maps.SymbolPath.CIRCLE,
-        scale: 7,
-        fillColor: "#ef4444",
-        fillOpacity: 1,
-        strokeColor: "#ffffff",
-        strokeWeight: 2,
-      },
-    });
+    endpointMarkersRef.current.start = undefined;
+    endpointMarkersRef.current.end = undefined;
+    if (path.length > 0) {
+      endpointMarkersRef.current.start = new g.maps.Marker({
+        position: path[0],
+        map: mapRef.current,
+        title: "Start",
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 7,
+          fillColor: "#22c55e",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+        },
+      });
+      endpointMarkersRef.current.end = new g.maps.Marker({
+        position: path[path.length - 1],
+        map: mapRef.current,
+        title: "Destination",
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 7,
+          fillColor: "#ef4444",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+        },
+      });
+    }
 
     // Ordered stop markers
     stopMarkersRef.current.forEach((marker) => marker.setMap(null));
@@ -280,10 +296,15 @@ export default function RouteMap({
     });
 
     // Fit the viewport to the full route
-    const bounds = new g.maps.LatLngBounds();
-    path.forEach((p: LatLng) => bounds.extend(p));
-    mapRef.current.fitBounds(bounds);
-  }, [mapsReady, path, stops]);
+    if (path.length > 0) {
+      const bounds = new g.maps.LatLngBounds();
+      path.forEach((p: LatLng) => bounds.extend(p));
+      mapRef.current.fitBounds(bounds);
+    } else {
+      mapRef.current.setCenter(fallbackCenter);
+      mapRef.current.setZoom(12);
+    }
+  }, [fallbackCenter, mapsReady, path, stops]);
 
   // Update live bus marker whenever currentLocation changes
   useEffect(() => {

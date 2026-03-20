@@ -7,6 +7,7 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "environment": "development",
       "env": {
         "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
@@ -14,6 +15,7 @@
     },
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
       "env": {
         "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
@@ -21,6 +23,7 @@
     },
     "production": {
       "autoIncrement": true,
+      "environment": "production",
       "env": {
         "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
