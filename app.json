@@ -7,9 +7,14 @@
     "icon": "./assets/images/icon.png",
     "scheme": "whereareyouapplication",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "We need your location to track the bus in real-time",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We need your location to track the bus even when the app is in the background",
+        "NSLocationAlwaysUsageDescription": "We need your location to track the bus continuously",
+        "UIBackgroundModes": ["location"]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -18,9 +23,16 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.maruthikummari.whereareyouapplication"
+      "package": "com.maruthikummari.whereareyouapplication",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "RECEIVE_BOOT_COMPLETED"
+      ]
     },
     "web": {
       "bundler": "metro",

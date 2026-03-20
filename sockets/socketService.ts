@@ -35,16 +35,24 @@ class SocketService {
     });
 
     if (!normalizedUrl) {
-      console.error("[Socket][connect] Missing backend URL. Set EXPO_PUBLIC_BACKEND_URL.");
+      console.error(
+        "[Socket][connect] Missing backend URL. Set EXPO_PUBLIC_BACKEND_URL.",
+      );
       return;
     }
 
     if (/localhost|127\.0\.0\.1/i.test(normalizedUrl)) {
-      console.warn("[Socket][connect] localhost URL on device may fail in production APK");
+      console.warn(
+        "[Socket][connect] localhost URL on device may fail in production APK",
+      );
     }
 
     if (this.socket) {
-      if (this.connectionUrl && normalizedUrl && this.connectionUrl !== normalizedUrl) {
+      if (
+        this.connectionUrl &&
+        normalizedUrl &&
+        this.connectionUrl !== normalizedUrl
+      ) {
         this.disconnect();
       }
     }
@@ -204,6 +212,14 @@ class SocketService {
     this.socket = null;
     this.connectionUrl = null;
     this.activeBusRooms.clear();
+  }
+
+  /**
+   * Get direct access to socket instance for advanced operations
+   * Used for emitting custom events in background location service
+   */
+  getSocket(): Socket | null {
+    return this.socket;
   }
 }
 
