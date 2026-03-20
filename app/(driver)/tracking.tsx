@@ -279,6 +279,8 @@ export default function DriverTrackingScreen() {
     getCurrentPosition,
     getCurrentPositionSafe,
     watchPosition,
+    requestForegroundPermission,
+    hasServicesEnabled,
   } = useLocation();
 
   const [loading, setLoading] = useState(true);
@@ -1160,7 +1162,7 @@ export default function DriverTrackingScreen() {
             <View className="flex-1 items-center justify-center">
               <Text className="text-sm text-slate-600">Route map unavailable</Text>
             </View>
-          ) : null}
+          )}
         </View>
 
         <View className="mt-4 rounded-2xl bg-white p-4">
@@ -1236,10 +1238,10 @@ export default function DriverTrackingScreen() {
                   <View className="mr-3 items-center" style={{ width: 18 }}>
                     <View
                       className={`h-3.5 w-3.5 rounded-full ${stop.status === "passed"
-                          ? "bg-emerald-500"
-                          : stop.status === "next"
-                            ? "bg-blue-600"
-                            : "bg-amber-400"
+                        ? "bg-emerald-500"
+                        : stop.status === "next"
+                          ? "bg-blue-600"
+                          : "bg-amber-400"
                         }`}
                     />
                     {index < stopsWithStatus.length - 1 ? (
@@ -1258,10 +1260,10 @@ export default function DriverTrackingScreen() {
                     </Text>
                     <Text
                       className={`mt-0.5 text-xs font-semibold ${stop.status === "passed"
-                          ? "text-emerald-600"
-                          : stop.status === "next"
-                            ? "text-blue-700"
-                            : "text-amber-700"
+                        ? "text-emerald-600"
+                        : stop.status === "next"
+                          ? "text-blue-700"
+                          : "text-amber-700"
                         }`}
                     >
                       {stop.status === "passed"
@@ -1284,8 +1286,8 @@ export default function DriverTrackingScreen() {
                     {stop.segmentDistanceText || stop.segmentEtaText ? (
                       <Text className="mt-0.5 text-[11px] text-slate-500">
                         {`From previous: ${stop.segmentDistanceText ?? "-"}${stop.segmentDistanceText && stop.segmentEtaText
-                            ? " • "
-                            : ""
+                          ? " • "
+                          : ""
                           }${stop.segmentEtaText ?? "-"}`}
                       </Text>
                     ) : null}
@@ -1298,10 +1300,10 @@ export default function DriverTrackingScreen() {
 
         <Pressable
           className={`mt-5 items-center rounded-2xl py-4 ${actionDisabled
-              ? "bg-slate-300"
-              : isTripActive
-                ? "bg-red-600"
-                : "bg-blue-700"
+            ? "bg-slate-300"
+            : isTripActive
+              ? "bg-red-600"
+              : "bg-blue-700"
             }`}
           disabled={actionDisabled}
           onPress={handleTripAction}
