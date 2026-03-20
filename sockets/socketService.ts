@@ -1,5 +1,8 @@
 import type { Socket } from "socket.io-client";
-import { addSentryBreadcrumb, captureSentryException } from "../monitoring/sentry";
+import {
+  addSentryBreadcrumb,
+  captureSentryException,
+} from "../monitoring/sentry";
 
 const { io } = require("socket.io-client");
 
@@ -47,7 +50,9 @@ class SocketService {
     });
 
     if (!normalizedUrl) {
-      console.error("[Socket][connect] Missing backend URL. Set EXPO_PUBLIC_BACKEND_URL.");
+      console.error(
+        "[Socket][connect] Missing backend URL. Set EXPO_PUBLIC_BACKEND_URL.",
+      );
       captureSentryException(new Error("Socket backend URL missing"), {
         tags: {
           area: "socket",
@@ -62,7 +67,9 @@ class SocketService {
     }
 
     if (/localhost|127\.0\.0\.1/i.test(normalizedUrl)) {
-      console.warn("[Socket][connect] localhost URL on device may fail in production APK");
+      console.warn(
+        "[Socket][connect] localhost URL on device may fail in production APK",
+      );
       addSentryBreadcrumb({
         category: "socket",
         message: "Socket using localhost URL",
@@ -74,7 +81,11 @@ class SocketService {
     }
 
     if (this.socket) {
-      if (this.connectionUrl && normalizedUrl && this.connectionUrl !== normalizedUrl) {
+      if (
+        this.connectionUrl &&
+        normalizedUrl &&
+        this.connectionUrl !== normalizedUrl
+      ) {
         addSentryBreadcrumb({
           category: "socket",
           message: "Socket URL changed, disconnecting previous connection",
@@ -254,13 +265,16 @@ class SocketService {
 
       const onError = () => {
         cleanup();
-        captureSentryException(new Error("Socket connect_error while waiting for connection"), {
-          tags: {
-            area: "socket",
-            stage: "wait_until_connected",
+        captureSentryException(
+          new Error("Socket connect_error while waiting for connection"),
+          {
+            tags: {
+              area: "socket",
+              stage: "wait_until_connected",
+            },
+            level: "warning",
           },
-          level: "warning",
-        });
+        );
         resolve(false);
       };
 
@@ -363,6 +377,14 @@ class SocketService {
     this.socket = null;
     this.connectionUrl = null;
     this.activeBusRooms.clear();
+  }
+
+  /**
+   * Get direct access to socket instance for advanced operations
+   * Used for emitting custom events in background location service
+   */
+  getSocket(): Socket | null {
+    return this.socket;
   }
 }
 
