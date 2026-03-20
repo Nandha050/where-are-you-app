@@ -19,6 +19,7 @@
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
+    "@sentry/react-native": "^8.5.0",
     "axios": "^1.13.5",
     "expo": "~54.0.33",
     "expo-background-fetch": "^55.0.10",
@@ -60,6 +61,13 @@
     "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.2",
     "vitest": "^2.1.8"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "@sentry/react-native"
+      ]
+    }
   },
   "private": true
 }

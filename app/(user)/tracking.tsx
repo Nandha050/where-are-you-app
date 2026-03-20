@@ -1,6 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
-import * as Location from "expo-location";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -19,6 +18,9 @@ import {
   getUserSubscriptions,
 } from "../../api/user";
 import RouteMap from "../../components/RouteMap";
+import { useLocation } from "../../hooks/useLocation";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { addSentryBreadcrumb, captureSentryException } from "../../monitoring/sentry";
 import socketService from "../../sockets/socketService";
 import authStore from "../../store/auth";
 
@@ -187,6 +189,10 @@ const getFreshnessLabel = (lastUpdated?: string | null): string => {
 };
 
 export default function UserTrackingScreen() {
+  useSentryScreen("user/tracking");
+
+  const { requestForegroundPermission, getCurrentPosition } = useLocation();
+
   const params = useLocalSearchParams<{
     busId: string | string[];
     plate?: string;
@@ -266,6 +272,16 @@ export default function UserTrackingScreen() {
               busId,
               error: polylineErr,
             });
+            captureSentryException(polylineErr, {
+              tags: {
+                area: "user_tracking",
+                operation: "decode_polyline",
+              },
+              extra: {
+                busId,
+              },
+              level: "warning",
+            });
             setRouteEncodedPolyline("");
             setPath([]);
           }
@@ -294,6 +310,15 @@ export default function UserTrackingScreen() {
         console.error("[UserTracking][load]", {
           busId,
           error: err,
+        });
+        captureSentryException(err, {
+          tags: {
+            area: "user_tracking",
+            operation: "load",
+          },
+          extra: {
+            busId,
+          },
         });
         setError(
           err?.response?.data?.message ?? err?.message ?? "Failed to load live bus",
@@ -417,13 +442,22 @@ export default function UserTrackingScreen() {
 
     setSubmittingSubscription(true);
     try {
-      const permission = await Location.requestForegroundPermissionsAsync();
+      addSentryBreadcrumb({
+        category: "user_tracking",
+        message: "Subscribe for alerts requested",
+        level: "info",
+        data: {
+          busId,
+        },
+      });
+
+      const permission = await requestForegroundPermission("user_tracking_subscribe_alerts");
 
       let userLatitude: number | undefined;
       let userLongitude: number | undefined;
 
       if (permission.granted) {
-        const current = await Location.getCurrentPositionAsync({});
+        const current = await getCurrentPosition("user_tracking_subscribe_alerts", {});
         userLatitude = current.coords.latitude;
         userLongitude = current.coords.longitude;
       }
@@ -442,6 +476,16 @@ export default function UserTrackingScreen() {
       console.error("[UserTracking][subscribeForAlerts]", {
         busId,
         error: subscriptionErr,
+      });
+      captureSentryException(subscriptionErr, {
+        tags: {
+          area: "user_tracking",
+          operation: "subscribe_for_alerts",
+        },
+        extra: {
+          busId,
+        },
+        level: "warning",
       });
       // Keep tracking view usable if subscription request fails.
     } finally {

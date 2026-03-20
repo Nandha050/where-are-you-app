@@ -3,6 +3,7 @@ import { useCallback, useEffect, useReducer } from "react";
 import { loginMember } from "../api/auth";
 import { API_BASE_URL } from "../api/client";
 import { LoginRequest } from "../api/types";
+import { addSentryBreadcrumb, captureSentryException, withSentrySpan } from "../monitoring/sentry";
 import authStore from "../store/auth";
 
 /** Force a re-render so we can re-read the MobX store snapshot */
@@ -47,8 +48,28 @@ export const useAuth = () => {
   const login = async (credentials: LoginRequest) => {
     setLoading(true);
     setError(null);
+
+    addSentryBreadcrumb({
+      category: "auth",
+      message: "Login started",
+      level: "info",
+      data: {
+        role: credentials.role,
+        memberId: credentials.memberId,
+      },
+    });
+
     try {
-      const response = await loginMember(credentials);
+      const response = await withSentrySpan(
+        {
+          op: "auth.login",
+          name: "auth.login",
+          data: {
+            role: credentials.role,
+          },
+        },
+        async () => loginMember(credentials),
+      );
       console.log("[Auth][login] Response received", {
         baseURL: API_BASE_URL,
         status: response?.status ?? null,
@@ -107,6 +128,17 @@ export const useAuth = () => {
 
       if (!normalizedUser.id || !normalizedUser.role) {
         const message = "Invalid login response from server";
+        captureSentryException(new Error(message), {
+          tags: {
+            area: "auth",
+            operation: "login",
+          },
+          extra: {
+            role: credentials.role,
+            hasToken: Boolean(token),
+          },
+        });
+
         setError(message);
         return { success: false as const, error: message };
       }
@@ -115,12 +147,37 @@ export const useAuth = () => {
         await authStore.setToken(token);
       }
       await authStore.setUser(normalizedUser);
+
+      addSentryBreadcrumb({
+        category: "auth",
+        message: "Login succeeded",
+        level: "info",
+        data: {
+          userId: normalizedUser.id,
+          role: normalizedUser.role,
+        },
+      });
+
       return { success: true as const, data: response.data };
     } catch (err: any) {
       console.error("[Auth][login] Failed", {
         baseURL: API_BASE_URL,
         error: err,
       });
+
+      captureSentryException(err, {
+        tags: {
+          area: "auth",
+          operation: "login",
+        },
+        extra: {
+          baseURL: API_BASE_URL,
+          role: credentials.role,
+          memberId: credentials.memberId,
+        },
+        level: "error",
+      });
+
       const message =
         err.response?.data?.message ||
         (err.request && !err.response
@@ -134,7 +191,29 @@ export const useAuth = () => {
   };
 
   const logout = async () => {
-    await authStore.clearAuth();
+    try {
+      addSentryBreadcrumb({
+        category: "auth",
+        message: "Logout started",
+        level: "info",
+      });
+
+      await authStore.clearAuth();
+
+      addSentryBreadcrumb({
+        category: "auth",
+        message: "Logout completed",
+        level: "info",
+      });
+    } catch (error) {
+      captureSentryException(error, {
+        tags: {
+          area: "auth",
+          operation: "logout",
+        },
+      });
+      throw error;
+    }
   };
 
   return {

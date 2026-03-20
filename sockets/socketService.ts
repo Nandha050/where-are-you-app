@@ -1,4 +1,8 @@
 import type { Socket } from "socket.io-client";
+import {
+  addSentryBreadcrumb,
+  captureSentryException,
+} from "../monitoring/sentry";
 
 const { io } = require("socket.io-client");
 
@@ -27,6 +31,17 @@ class SocketService {
   connect(url: string, token?: string): void {
     const normalizedUrl = normalizeSocketUrl(url);
 
+    addSentryBreadcrumb({
+      category: "socket",
+      message: "Socket connect requested",
+      level: "info",
+      data: {
+        normalizedUrl: normalizedUrl || "undefined",
+        path: SOCKET_PATH,
+        hasToken: Boolean(token),
+      },
+    });
+
     console.log("[Socket][connect]", {
       requestedUrl: url || "undefined",
       normalizedUrl: normalizedUrl || "undefined",
@@ -38,6 +53,16 @@ class SocketService {
       console.error(
         "[Socket][connect] Missing backend URL. Set EXPO_PUBLIC_BACKEND_URL.",
       );
+      captureSentryException(new Error("Socket backend URL missing"), {
+        tags: {
+          area: "socket",
+          stage: "connect",
+        },
+        extra: {
+          requestedUrl: url || "undefined",
+          path: SOCKET_PATH,
+        },
+      });
       return;
     }
 
@@ -45,6 +70,14 @@ class SocketService {
       console.warn(
         "[Socket][connect] localhost URL on device may fail in production APK",
       );
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Socket using localhost URL",
+        level: "warning",
+        data: {
+          normalizedUrl,
+        },
+      });
     }
 
     if (this.socket) {
@@ -53,6 +86,15 @@ class SocketService {
         normalizedUrl &&
         this.connectionUrl !== normalizedUrl
       ) {
+        addSentryBreadcrumb({
+          category: "socket",
+          message: "Socket URL changed, disconnecting previous connection",
+          level: "info",
+          data: {
+            from: this.connectionUrl,
+            to: normalizedUrl,
+          },
+        });
         this.disconnect();
       }
     }
@@ -63,6 +105,14 @@ class SocketService {
       }
 
       if (!this.socket.connected) {
+        addSentryBreadcrumb({
+          category: "socket",
+          message: "Reusing existing socket instance",
+          level: "info",
+          data: {
+            normalizedUrl,
+          },
+        });
         this.socket.connect();
       }
       return;
@@ -84,6 +134,15 @@ class SocketService {
 
     socket.on("connect", () => {
       console.log("Connected to socket server");
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Socket connected",
+        level: "info",
+        data: {
+          normalizedUrl,
+          joinedRooms: Array.from(this.activeBusRooms),
+        },
+      });
       this.activeBusRooms.forEach((busId) => {
         socket.emit("joinBusRoom", String(busId));
       });
@@ -91,23 +150,68 @@ class SocketService {
 
     socket.on("disconnect", (reason: unknown) => {
       console.log("Disconnected from socket server", reason);
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Socket disconnected",
+        level: "warning",
+        data: {
+          reason: String(reason ?? "unknown"),
+        },
+      });
     });
 
     socket.on("connect_error", (error: unknown) => {
       console.warn("Socket connect error", error);
+      captureSentryException(error, {
+        tags: {
+          area: "socket",
+          stage: "connect_error",
+        },
+        extra: {
+          normalizedUrl,
+          path: SOCKET_PATH,
+        },
+        level: "error",
+      });
     });
 
     socket.io.on("reconnect_attempt", (attempt: unknown) => {
       console.log("Socket reconnect attempt", attempt);
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Socket reconnect attempt",
+        level: "warning",
+        data: {
+          attempt,
+        },
+      });
       this.reconnectAttemptListeners.forEach((listener) => listener(attempt));
     });
 
     socket.io.on("reconnect", (attempt: unknown) => {
       console.log("Socket reconnected", attempt);
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Socket reconnected",
+        level: "info",
+        data: {
+          attempt,
+        },
+      });
     });
 
     socket.io.on("reconnect_error", (error: unknown) => {
       console.warn("Socket reconnect error", error);
+      captureSentryException(error, {
+        tags: {
+          area: "socket",
+          stage: "reconnect_error",
+        },
+        extra: {
+          normalizedUrl,
+        },
+        level: "warning",
+      });
     });
 
     socket.connect();
@@ -115,8 +219,25 @@ class SocketService {
 
   emit(event: string, data: unknown): void {
     if (!this.socket?.connected) {
+      captureSentryException(new Error("Socket emit while disconnected"), {
+        tags: {
+          area: "socket",
+          stage: "emit",
+          event,
+        },
+        extra: {
+          connected: false,
+        },
+      });
       throw new Error("Socket is not connected");
     }
+
+    addSentryBreadcrumb({
+      category: "socket",
+      message: `Socket emit: ${event}`,
+      level: "debug",
+    });
+
     this.socket.emit(event, data);
   }
 
@@ -144,11 +265,30 @@ class SocketService {
 
       const onError = () => {
         cleanup();
+        captureSentryException(
+          new Error("Socket connect_error while waiting for connection"),
+          {
+            tags: {
+              area: "socket",
+              stage: "wait_until_connected",
+            },
+            level: "warning",
+          },
+        );
         resolve(false);
       };
 
       const timeout = setTimeout(() => {
         cleanup();
+        addSentryBreadcrumb({
+          category: "socket",
+          message: "Socket connection wait timed out",
+          level: "warning",
+          data: {
+            timeoutMs,
+            connected: Boolean(socket.connected),
+          },
+        });
         resolve(Boolean(socket.connected));
       }, timeoutMs);
 
@@ -191,6 +331,14 @@ class SocketService {
 
     this.activeBusRooms.add(normalized);
     if (this.socket?.connected) {
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Join bus room",
+        level: "info",
+        data: {
+          busId: normalized,
+        },
+      });
       this.socket.emit("joinBusRoom", normalized);
     }
   }
@@ -203,11 +351,28 @@ class SocketService {
 
     this.activeBusRooms.delete(normalized);
     if (this.socket?.connected) {
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Leave bus room",
+        level: "info",
+        data: {
+          busId: normalized,
+        },
+      });
       this.socket.emit("leaveBusRoom", normalized);
     }
   }
 
   disconnect(): void {
+    addSentryBreadcrumb({
+      category: "socket",
+      message: "Socket disconnect invoked",
+      level: "info",
+      data: {
+        roomCount: this.activeBusRooms.size,
+      },
+    });
+
     this.socket?.disconnect();
     this.socket = null;
     this.connectionUrl = null;

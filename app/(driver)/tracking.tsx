@@ -24,6 +24,12 @@ import {
 import { ActiveTrip } from "../../api/types";
 import RouteMap from "../../components/RouteMap";
 import { useAuth } from "../../hooks/useAuth";
+import { useLocation } from "../../hooks/useLocation";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import {
+  addSentryBreadcrumb,
+  captureSentryException,
+} from "../../monitoring/sentry";
 import { backgroundLocationService } from "../../sockets/backgroundLocationTask";
 import socketService from "../../sockets/socketService";
 
@@ -265,7 +271,15 @@ const buildPathFromAssignment = (
 };
 
 export default function DriverTrackingScreen() {
+  useSentryScreen("driver/tracking");
+
   const { isAuthenticated, isHydrated, token } = useAuth();
+  const {
+    requestForegroundPermission,
+    hasServicesEnabled,
+    getCurrentPosition,
+    watchPosition,
+  } = useLocation();
 
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -316,6 +330,13 @@ export default function DriverTrackingScreen() {
         getActiveTrip(),
         getDriverMyRoute().catch((routeErr) => {
           console.warn("[DriverTracking][getDriverMyRoute]", routeErr);
+          captureSentryException(routeErr, {
+            tags: {
+              area: "driver_tracking",
+              operation: "get_driver_my_route",
+            },
+            level: "warning",
+          });
           return null;
         }),
       ]);
@@ -348,6 +369,12 @@ export default function DriverTrackingScreen() {
       }));
     } catch (err: any) {
       console.error("[DriverTracking][refreshScreenData]", err);
+      captureSentryException(err, {
+        tags: {
+          area: "driver_tracking",
+          operation: "refresh_screen_data",
+        },
+      });
       setError(
         err?.response?.data?.message ??
           err?.message ??
@@ -392,10 +419,13 @@ export default function DriverTrackingScreen() {
 
     if (!location) {
       try {
-        const current = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-          mayShowUserSettingsDialog: true,
-        });
+        const current = await getCurrentPosition(
+          "driver_tracking_send_current",
+          {
+            accuracy: Location.Accuracy.High,
+            mayShowUserSettingsDialog: true,
+          },
+        );
 
         if (!isAccurateEnough(current.coords.accuracy ?? null)) {
           sendingRef.current = false;
@@ -423,6 +453,13 @@ export default function DriverTrackingScreen() {
           "[DriverTracking][sendCurrentLocation][getCurrentPosition]",
           locationErr,
         );
+        captureSentryException(locationErr, {
+          tags: {
+            area: "driver_tracking",
+            operation: "send_current_location_read",
+          },
+          level: "warning",
+        });
         location = null;
       }
     }
@@ -485,6 +522,13 @@ export default function DriverTrackingScreen() {
           sending: false,
         }));
         setSendNote("No active trip found on server. Start trip again.");
+
+        addSentryBreadcrumb({
+          category: "driver_tracking",
+          message: "No active trip while posting location",
+          level: "warning",
+        });
+
         return;
       }
 
@@ -492,6 +536,12 @@ export default function DriverTrackingScreen() {
         "[DriverTracking][sendCurrentLocation][postMyLocation]",
         err,
       );
+      captureSentryException(err, {
+        tags: {
+          area: "driver_tracking",
+          operation: "send_current_location_post",
+        },
+      });
       setUiState((previous) => ({
         ...previous,
         sending: false,
@@ -499,7 +549,7 @@ export default function DriverTrackingScreen() {
     } finally {
       sendingRef.current = false;
     }
-  }, [assignedBusId, isTripActive, stopLocationFlow]);
+  }, [assignedBusId, getCurrentPosition, isTripActive, stopLocationFlow]);
 
   const startLocationFlow = useCallback(async () => {
     if (!isTripActive || !assignedBusId || sendTimerRef.current) {
@@ -507,13 +557,17 @@ export default function DriverTrackingScreen() {
     }
 
     try {
-      const permission = await Location.requestForegroundPermissionsAsync();
+      const permission = await requestForegroundPermission(
+        "driver_tracking_start_flow",
+      );
       if (!permission.granted) {
         setSendNote("Location permission is required to send live telemetry.");
         return;
       }
 
-      const servicesEnabled = await Location.hasServicesEnabledAsync();
+      const servicesEnabled = await hasServicesEnabled(
+        "driver_tracking_start_flow",
+      );
       if (!servicesEnabled) {
         setSendNote("Enable GPS/location services to continue telemetry.");
         return;
@@ -523,6 +577,12 @@ export default function DriverTrackingScreen() {
         "[DriverTracking][startLocationFlow][permissions]",
         permissionErr,
       );
+      captureSentryException(permissionErr, {
+        tags: {
+          area: "driver_tracking",
+          operation: "start_location_permissions",
+        },
+      });
       setSendNote("Unable to verify location permissions. Please retry.");
       return;
     }
@@ -530,7 +590,7 @@ export default function DriverTrackingScreen() {
     socketService.connect(API_BASE_URL, token ?? undefined);
 
     try {
-      const current = await Location.getCurrentPositionAsync({
+      const current = await getCurrentPosition("driver_tracking_initial_read", {
         accuracy: Location.Accuracy.High,
         mayShowUserSettingsDialog: true,
       });
@@ -556,11 +616,19 @@ export default function DriverTrackingScreen() {
         "[DriverTracking][startLocationFlow][initialLocation]",
         initialReadErr,
       );
+      captureSentryException(initialReadErr, {
+        tags: {
+          area: "driver_tracking",
+          operation: "start_location_initial_read",
+        },
+        level: "warning",
+      });
       // Keep interval sender active even if initial read fails.
     }
 
     try {
-      watchRef.current = await Location.watchPositionAsync(
+      watchRef.current = await watchPosition(
+        "driver_tracking_watch",
         {
           accuracy: Location.Accuracy.High,
           timeInterval: 1000,
@@ -589,6 +657,13 @@ export default function DriverTrackingScreen() {
         "[DriverTracking][startLocationFlow][watchPosition]",
         watchErr,
       );
+      captureSentryException(watchErr, {
+        tags: {
+          area: "driver_tracking",
+          operation: "start_location_watch",
+        },
+        level: "warning",
+      });
       // Fallback to periodic getCurrentPosition in sender.
     }
 
@@ -597,7 +672,16 @@ export default function DriverTrackingScreen() {
     sendTimerRef.current = setInterval(() => {
       void sendCurrentLocation();
     }, 5000);
-  }, [assignedBusId, isTripActive, sendCurrentLocation, token]);
+  }, [
+    assignedBusId,
+    getCurrentPosition,
+    hasServicesEnabled,
+    isTripActive,
+    requestForegroundPermission,
+    sendCurrentLocation,
+    token,
+    watchPosition,
+  ]);
 
   const handleTripAction = useCallback(async () => {
     if (actionLoading) {
@@ -609,7 +693,15 @@ export default function DriverTrackingScreen() {
 
     try {
       if (isTripActive) {
-        // Stop trip
+        addSentryBreadcrumb({
+          category: "driver_tracking",
+          message: "Stop trip requested",
+          level: "info",
+          data: {
+            tripId: uiState.trip?.id ?? null,
+          },
+        });
+
         await stopTrip();
         const latest = await getActiveTrip();
         setUiState((previous) => ({
@@ -628,6 +720,16 @@ export default function DriverTrackingScreen() {
         }
 
         try {
+          addSentryBreadcrumb({
+            category: "driver_tracking",
+            message: "Start trip requested",
+            level: "info",
+            data: {
+              busId: assignment.bus?.id ?? null,
+              routeId: assignment.route?.id ?? null,
+            },
+          });
+
           const started = await startTrip();
           setUiState((previous) => ({
             ...previous,
@@ -675,6 +777,12 @@ export default function DriverTrackingScreen() {
       }
     } catch (err: any) {
       console.error("[DriverTracking][handleTripAction]", err);
+      captureSentryException(err, {
+        tags: {
+          area: "driver_tracking",
+          operation: "handle_trip_action",
+        },
+      });
       setError(
         err?.response?.data?.message ?? err?.message ?? "Unable to update trip",
       );
@@ -684,13 +792,16 @@ export default function DriverTrackingScreen() {
   }, [
     actionLoading,
     assignedBusId,
+    assignment.bus?.id,
+    assignment.route?.id,
     hasAssignment,
     isTripActive,
     stopLocationFlow,
     token,
+    uiState.trip?.id,
   ]);
 
-  // Cleanup background tracking when logging out or leaving screen
+  // Cleanup background tracking when logging out
   useFocusEffect(
     useCallback(() => {
       if (!isAuthenticated) {

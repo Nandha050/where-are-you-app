@@ -2,17 +2,21 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    ScrollView,
-    Text,
-    View,
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { UserNotification } from "../../api/types";
 import { getUserNotifications, markUserNotificationRead } from "../../api/user";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { captureSentryException } from "../../monitoring/sentry";
 
 export default function UserAlertsScreen() {
+  useSentryScreen("user/alerts");
+
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState<UserNotification[]>([]);
 
@@ -22,7 +26,13 @@ export default function UserAlertsScreen() {
       try {
         const list = await getUserNotifications();
         setNotifications(list);
-      } catch {
+      } catch (error) {
+        captureSentryException(error, {
+          tags: {
+            area: "user_alerts",
+            operation: "load_notifications",
+          },
+        });
         setNotifications([]);
       } finally {
         setLoading(false);
@@ -42,7 +52,17 @@ export default function UserAlertsScreen() {
             : item,
         ),
       );
-    } catch {
+    } catch (error) {
+      captureSentryException(error, {
+        tags: {
+          area: "user_alerts",
+          operation: "mark_as_read",
+        },
+        extra: {
+          notificationId,
+        },
+        level: "warning",
+      });
       // best-effort
     }
   };

@@ -290,12 +290,12 @@ class LiveBusTrackingStore {
     }): void {
         this.upsert({
             busId: payload.busId,
-            lat: payload.currentLat ?? null,
-            lng: payload.currentLng ?? null,
-            speed: payload.speed ?? null,
+            lat: payload.currentLat ?? undefined,
+            lng: payload.currentLng ?? undefined,
+            speed: payload.speed ?? undefined,
             status: payload.status ?? payload.trackingStatus ?? "Idle",
-            trackingStatus: payload.trackingStatus ?? null,
-            tripStatus: payload.tripStatus ?? null,
+            trackingStatus: payload.trackingStatus ?? undefined,
+            tripStatus: payload.tripStatus ?? undefined,
             skipped: payload.skipped ?? false,
             timestamp: payload.lastUpdated ?? new Date().toISOString(),
         });

@@ -12,8 +12,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { logoutUser } from "../../api/auth";
 import { patchUserFcmToken } from "../../api/user";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { addSentryBreadcrumb, captureSentryException } from "../../monitoring/sentry";
 
 export default function UserProfileScreen() {
+  useSentryScreen("user/profile");
+
   const { user, logout } = useAuth();
   const [fcmToken, setFcmToken] = useState("");
   const [savingToken, setSavingToken] = useState(false);
@@ -22,12 +26,26 @@ export default function UserProfileScreen() {
 
   const saveToken = async () => {
     if (!fcmToken.trim()) return;
+
+    addSentryBreadcrumb({
+      category: "user_profile",
+      message: "Save FCM token requested",
+      level: "info",
+    });
+
     setSavingToken(true);
     setTokenError(null);
     try {
       await patchUserFcmToken(fcmToken.trim());
     } catch (err: any) {
       console.error("[UserProfile][saveToken]", err);
+      captureSentryException(err, {
+        tags: {
+          area: "user_profile",
+          operation: "save_fcm_token",
+        },
+      });
+
       setTokenError(
         err?.response?.data?.message ?? err?.message ?? "Failed to save FCM token",
       );
@@ -40,7 +58,15 @@ export default function UserProfileScreen() {
     setLoggingOut(true);
     try {
       await logoutUser();
-    } catch {
+    } catch (error) {
+      captureSentryException(error, {
+        tags: {
+          area: "user_profile",
+          operation: "logout_user_api",
+        },
+        level: "warning",
+      });
+
       // best effort
     }
     await logout();

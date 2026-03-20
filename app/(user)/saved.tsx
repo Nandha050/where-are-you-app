@@ -15,6 +15,8 @@ import {
   getUserBusLive,
   getUserSubscriptions,
 } from "../../api/user";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { captureSentryException } from "../../monitoring/sentry";
 
 type SavedSubscriptionItem = {
   subscription: UserSubscription;
@@ -60,6 +62,8 @@ const getFreshnessLabel = (timestamp?: string | null): string => {
 };
 
 export default function SavedBusesScreen() {
+  useSentryScreen("user/saved");
+
   const [items, setItems] = useState<SavedSubscriptionItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -78,14 +82,30 @@ export default function SavedBusesScreen() {
                 tripStatus: live.trip?.status ?? live.tripStatus ?? null,
                 lastUpdated: live.lastUpdated ?? null,
               };
-            } catch {
+            } catch (error) {
+              captureSentryException(error, {
+                tags: {
+                  area: "user_saved",
+                  operation: "get_user_bus_live",
+                },
+                extra: {
+                  busId: String(subscription.busId),
+                },
+                level: "warning",
+              });
               return { subscription };
             }
           }),
         );
 
         setItems(enriched);
-      } catch {
+      } catch (error) {
+        captureSentryException(error, {
+          tags: {
+            area: "user_saved",
+            operation: "load_saved_buses",
+          },
+        });
         setItems([]);
       } finally {
         setLoading(false);
@@ -101,7 +121,17 @@ export default function SavedBusesScreen() {
       setItems((previous) =>
         previous.filter((item) => item.subscription.id !== subscriptionId),
       );
-    } catch {
+    } catch (error) {
+      captureSentryException(error, {
+        tags: {
+          area: "user_saved",
+          operation: "delete_subscription",
+        },
+        extra: {
+          subscriptionId,
+        },
+        level: "warning",
+      });
       // keep existing state if delete fails
     }
   };

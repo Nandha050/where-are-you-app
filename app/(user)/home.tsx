@@ -21,6 +21,8 @@ import {
   searchUserBuses,
 } from "../../api/user";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { addSentryBreadcrumb, captureSentryException } from "../../monitoring/sentry";
 
 interface SavedBusCard {
   subscriptionId: string;
@@ -98,6 +100,8 @@ const extractSavedBus = (
 };
 
 export default function UserHome() {
+  useSentryScreen("user/home");
+
   const { isAuthenticated, isHydrated } = useAuth();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<BusSearchResult[]>([]);
@@ -139,6 +143,16 @@ export default function UserHome() {
               busId: item.busId,
               error: liveErr,
             });
+            captureSentryException(liveErr, {
+              tags: {
+                area: "user_home",
+                operation: "get_user_bus_live",
+              },
+              extra: {
+                busId: item.busId,
+              },
+              level: "warning",
+            });
             return item;
           }
         }),
@@ -150,6 +164,13 @@ export default function UserHome() {
       );
     } catch (loadErr) {
       console.error("[UserHome][loadSavedAndNotifications]", loadErr);
+      captureSentryException(loadErr, {
+        tags: {
+          area: "user_home",
+          operation: "load_saved_and_notifications",
+        },
+      });
+
       // Backend unreachable – keep UI usable with empty data
       setSavedBuses([]);
       setNotificationCount(0);
@@ -176,6 +197,16 @@ export default function UserHome() {
     setSearching(true);
     setHasSearched(true);
     setSearchError(null);
+
+    addSentryBreadcrumb({
+      category: "user_home",
+      message: "Bus search requested",
+      level: "info",
+      data: {
+        numberPlate,
+      },
+    });
+
     try {
       const list = await searchUserBuses(numberPlate);
       setResults(list);
@@ -193,6 +224,16 @@ export default function UserHome() {
         numberPlate,
         error,
       });
+      captureSentryException(error, {
+        tags: {
+          area: "user_home",
+          operation: "search_buses",
+        },
+        extra: {
+          numberPlate,
+        },
+      });
+
       setSearchError(
         error?.response?.data?.message ?? error?.message ?? "Search failed",
       );
@@ -214,6 +255,16 @@ export default function UserHome() {
       }
 
       const existing = savedMap.get(bus.busId);
+
+      addSentryBreadcrumb({
+        category: "user_home",
+        message: existing ? "Removing bus subscription" : "Creating bus subscription",
+        level: "info",
+        data: {
+          busId: bus.busId,
+          numberPlate: bus.numberPlate,
+        },
+      });
 
       if (existing) {
         await deleteUserSubscription(existing.subscriptionId);
@@ -244,6 +295,17 @@ export default function UserHome() {
         busId: bus?.busId,
         error: saveErr,
       });
+      captureSentryException(saveErr, {
+        tags: {
+          area: "user_home",
+          operation: "toggle_saved",
+        },
+        extra: {
+          busId: bus?.busId ?? null,
+        },
+        level: "warning",
+      });
+
       // best-effort – keep UI usable
     }
   };

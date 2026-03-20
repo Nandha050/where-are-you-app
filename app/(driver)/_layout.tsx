@@ -1,8 +1,11 @@
 import { Redirect, Tabs, useSegments } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
 
 export default function DriverLayout() {
+  useSentryScreen("driver/layout");
+
   const { isHydrated, isAuthenticated, user } = useAuth();
   const segments = useSegments();
 
