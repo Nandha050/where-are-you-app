@@ -1,4 +1,4 @@
-{
+export default {
   "expo": {
     "name": "where-are-you-application",
     "slug": "where-are-you-application",
@@ -20,7 +20,12 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.maruthikummari.whereareyouapplication"
+      "package": "com.maruthikummari.whereareyouapplication",
+      "config": {
+        "googleMaps": {
+          "apiKey": process.env.GOOGLE_MAPS_API_KEY
+        }
+      }
     },
     "web": {
       "bundler": "metro",
@@ -39,6 +44,20 @@
           "dark": {
             "backgroundColor": "#000000"
           }
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "react-native",
+          "organization": "whereareyou"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Where Are You to use your location for bus tracking."
         }
       ]
     ],

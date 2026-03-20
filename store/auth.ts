@@ -1,6 +1,12 @@
 import * as SecureStore from "expo-secure-store";
 import { makeAutoObservable, runInAction } from "mobx";
 import { Platform } from "react-native";
+import {
+  addSentryBreadcrumb,
+  captureSentryException,
+  clearSentryUserContext,
+  setSentryUserContext,
+} from "../monitoring/sentry";
 
 export interface User {
   id: string;
@@ -62,24 +68,70 @@ class AuthStore {
         if (rawUser) this.user = JSON.parse(rawUser) as User;
         this.isHydrated = true;
       });
+
+      if (this.user?.id) {
+        setSentryUserContext({
+          id: this.user.id,
+          username: this.user.name,
+          role: this.user.role,
+        });
+      }
+
+      addSentryBreadcrumb({
+        category: "auth",
+        message: "Auth store hydrated",
+        level: "info",
+        data: {
+          hasUser: Boolean(this.user),
+          hasToken: Boolean(this.token),
+          platform: Platform.OS,
+        },
+      });
     } catch (error) {
       console.error("Error initializing auth:", error);
+      captureSentryException(error, {
+        tags: {
+          area: "auth",
+          operation: "initialize_auth",
+        },
+        extra: {
+          platform: Platform.OS,
+        },
+      });
+
       runInAction(() => {
         this.token = null;
         this.user = null;
         this.isHydrated = true;
       });
+
+      clearSentryUserContext();
     }
   }
 
   async setToken(token: string) {
     this.token = token;
     await this.setItem("authToken", token);
+
+    addSentryBreadcrumb({
+      category: "auth",
+      message: "Auth token updated",
+      level: "info",
+      data: {
+        hasToken: Boolean(token),
+      },
+    });
   }
 
   async setUser(user: User) {
     this.user = user;
     await this.setItem("authUser", JSON.stringify(user));
+
+    setSentryUserContext({
+      id: user.id,
+      username: user.name,
+      role: user.role,
+    });
   }
 
   async clearAuth() {
@@ -87,6 +139,8 @@ class AuthStore {
     this.user = null;
     await this.removeItem("authToken");
     await this.removeItem("authUser");
+
+    clearSentryUserContext();
   }
 
   get isAuthenticated() {

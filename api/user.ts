@@ -1,3 +1,4 @@
+import { withSentrySpan } from "../monitoring/sentry";
 import apiClient, { assertAxiosSuccess, logApiError } from "./client";
 import {
   AdminRoute,
@@ -349,11 +350,19 @@ const asObject = (value: unknown): Record<string, any> => {
 };
 
 const withApiGuard = async <T>(scope: string, handler: () => Promise<T>): Promise<T> => {
-  try {
-    return await handler();
-  } catch (error) {
-    throw logApiError(scope, error);
-  }
+  return withSentrySpan(
+    {
+      op: "http.client",
+      name: `api.user:${scope}`,
+    },
+    async () => {
+      try {
+        return await handler();
+      } catch (error) {
+        throw logApiError(scope, error);
+      }
+    },
+  );
 };
 
 export const searchUserBuses = async (numberPlate: string) => {

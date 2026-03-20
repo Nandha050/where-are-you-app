@@ -19,6 +19,8 @@ import {
 } from "../../api/driver";
 import { ActiveTrip } from "../../api/types";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { addSentryBreadcrumb, captureSentryException } from "../../monitoring/sentry";
 
 type LocalTripHistoryItem = {
   id: string;
@@ -77,6 +79,8 @@ const isAlreadyActiveTripError = (error: unknown): boolean => {
 };
 
 export default function DriverHome() {
+  useSentryScreen("driver/home");
+
   const { isAuthenticated, isHydrated, user, logout } = useAuth();
 
   const [loading, setLoading] = useState(true);
@@ -119,6 +123,13 @@ export default function DriverHome() {
       setMe(driverMe);
       setActiveTrip(trip);
     } catch (err: any) {
+      captureSentryException(err, {
+        tags: {
+          area: "driver_home",
+          operation: "load_dashboard",
+        },
+      });
+
       setError(
         err?.response?.data?.message ?? err?.message ?? "Failed to load dashboard",
       );
@@ -134,10 +145,24 @@ export default function DriverHome() {
   );
 
   const handleLogout = async () => {
+    addSentryBreadcrumb({
+      category: "auth",
+      message: "Driver logout initiated",
+      level: "info",
+    });
+
     setLoggingOut(true);
     try {
       await logoutGeneric();
-    } catch {
+    } catch (error) {
+      captureSentryException(error, {
+        tags: {
+          area: "driver_home",
+          operation: "logout_generic",
+        },
+        level: "warning",
+      });
+
       // best effort
     }
 
@@ -159,6 +184,13 @@ export default function DriverHome() {
       setActiveTrip(started ?? (await getActiveTrip()));
       router.push("/(driver)/tracking" as any);
     } catch (err: any) {
+      captureSentryException(err, {
+        tags: {
+          area: "driver_home",
+          operation: "start_trip",
+        },
+      });
+
       if (isAlreadyActiveTripError(err)) {
         try {
           const current = await getActiveTrip();
@@ -170,6 +202,13 @@ export default function DriverHome() {
             fallbackErr?.message ??
             "Trip appears active, but failed to fetch its latest state",
           );
+
+          captureSentryException(fallbackErr, {
+            tags: {
+              area: "driver_home",
+              operation: "start_trip_fallback",
+            },
+          });
         }
       } else {
         setError(
@@ -206,6 +245,13 @@ export default function DriverHome() {
 
       setActiveTrip(latest);
     } catch (err: any) {
+      captureSentryException(err, {
+        tags: {
+          area: "driver_home",
+          operation: "stop_trip",
+        },
+      });
+
       setError(
         err?.response?.data?.message ?? err?.message ?? "Unable to stop trip",
       );

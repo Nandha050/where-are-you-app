@@ -1,8 +1,11 @@
 import { Redirect, Stack } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
 
 export default function UserLayout() {
+  useSentryScreen("user/layout");
+
   const { isHydrated, isAuthenticated, user } = useAuth();
 
   if (!isHydrated) {

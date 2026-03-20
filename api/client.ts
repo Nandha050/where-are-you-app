@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosResponse } from "axios";
 import { Platform } from "react-native";
+import { addSentryBreadcrumb, captureSentryException } from "../monitoring/sentry";
 import authStore from "../store/auth";
 
 const BASE_URL = String(process.env.EXPO_PUBLIC_BACKEND_URL ?? "").trim();
@@ -239,6 +240,20 @@ export const assertAxiosSuccess = <T>(
     data: toSerializablePayload(response.data),
   });
 
+  captureSentryException(new Error(message), {
+    tags: {
+      area: "api",
+      scope,
+      status: response.status,
+    },
+    extra: {
+      url: buildFullUrl(response.config?.baseURL, response.config?.url),
+      method: response.config?.method?.toUpperCase() ?? null,
+      responseData: toSerializablePayload(response.data),
+    },
+    level: "error",
+  });
+
   throw new Error(message);
 };
 
@@ -258,6 +273,23 @@ export const logApiError = (scope: string, error: unknown): Error => {
     requestData: toSerializablePayload(axiosError?.config?.data),
     responseData: toSerializablePayload(normalizedResponseData),
     code: axiosError?.code ?? null,
+  });
+
+  captureSentryException(error, {
+    tags: {
+      area: "api",
+      scope,
+      status: responseStatus ?? "unknown",
+      method: axiosError?.config?.method?.toUpperCase() ?? "unknown",
+    },
+    extra: {
+      url: requestUrl || null,
+      requestData: toSerializablePayload(axiosError?.config?.data),
+      responseData: toSerializablePayload(normalizedResponseData),
+      code: axiosError?.code ?? null,
+      backendUrl: API_BASE_URL || null,
+    },
+    level: "error",
   });
 
   if (error instanceof Error) {
@@ -285,6 +317,19 @@ apiClient.interceptors.request.use((config) => {
       requestedPath: config.url ?? null,
       platform: Platform.OS,
     });
+
+    captureSentryException(configError, {
+      tags: {
+        area: "api",
+        stage: "request_config",
+      },
+      extra: {
+        requestedPath: config.url ?? null,
+        platform: Platform.OS,
+      },
+      level: "error",
+    });
+
     return Promise.reject(configError);
   }
 
@@ -297,6 +342,19 @@ apiClient.interceptors.request.use((config) => {
       backendUrl: API_BASE_URL,
       platform: Platform.OS,
     });
+
+    captureSentryException(localhostError, {
+      tags: {
+        area: "api",
+        stage: "request_config",
+      },
+      extra: {
+        backendUrl: API_BASE_URL,
+        platform: Platform.OS,
+      },
+      level: "warning",
+    });
+
     return Promise.reject(localhostError);
   }
 
@@ -304,6 +362,16 @@ apiClient.interceptors.request.use((config) => {
 
   const requestUrl = buildFullUrl(config.baseURL ?? API_BASE_URL, config.url);
   const method = (config.method ?? "get").toUpperCase();
+
+  addSentryBreadcrumb({
+    category: "api",
+    message: `${method} ${requestUrl || "(empty)"}`,
+    level: "info",
+    data: {
+      timeout: config.timeout ?? API_TIMEOUT,
+      hasAuthToken: Boolean(authStore.token),
+    },
+  });
 
   if (ENABLE_API_DEBUG_LOGS) {
     console.log("[API][request]", {
@@ -331,6 +399,18 @@ apiClient.interceptors.request.use((config) => {
   console.error("[API][request][error]", {
     message: extractApiErrorMessage(error),
   });
+
+  captureSentryException(error, {
+    tags: {
+      area: "api",
+      stage: "request",
+    },
+    extra: {
+      message: extractApiErrorMessage(error),
+    },
+    level: "error",
+  });
+
   return Promise.reject(error);
 });
 
@@ -348,11 +428,34 @@ apiClient.interceptors.response.use(
       });
     }
 
+    addSentryBreadcrumb({
+      category: "api",
+      message: `Response ${response.status}`,
+      level: "info",
+      data: {
+        method: response.config?.method?.toUpperCase() ?? null,
+        url: buildFullUrl(response.config?.baseURL, response.config?.url),
+      },
+    });
+
     if (!isSuccessfulStatus(response.status)) {
       const message = `[API][response] Unexpected status ${response.status}`;
       console.error(message, {
         url: buildFullUrl(response.config?.baseURL, response.config?.url),
       });
+
+      captureSentryException(new Error(message), {
+        tags: {
+          area: "api",
+          stage: "response",
+          status: response.status,
+        },
+        extra: {
+          method: response.config?.method?.toUpperCase() ?? null,
+          url: buildFullUrl(response.config?.baseURL, response.config?.url),
+        },
+      });
+
       return Promise.reject(new Error(message));
     }
 
@@ -374,6 +477,21 @@ apiClient.interceptors.response.use(
       url: buildFullUrl(axiosError?.config?.baseURL, axiosError?.config?.url),
       responseData: toSerializablePayload(normalizedErrorData),
       code: axiosError?.code ?? null,
+    });
+
+    captureSentryException(error, {
+      tags: {
+        area: "api",
+        stage: "response",
+        status: status ?? "unknown",
+        method: axiosError?.config?.method?.toUpperCase() ?? "unknown",
+      },
+      extra: {
+        url: buildFullUrl(axiosError?.config?.baseURL, axiosError?.config?.url),
+        responseData: toSerializablePayload(normalizedErrorData),
+        code: axiosError?.code ?? null,
+      },
+      level: "error",
     });
 
     if (axiosError?.request && !axiosError?.response) {

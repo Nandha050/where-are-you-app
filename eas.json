@@ -8,19 +8,22 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     },
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://where-are-you-km9g.onrender.com",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     }
   },

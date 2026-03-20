@@ -17,8 +17,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
+import { addSentryBreadcrumb } from "../../monitoring/sentry";
 
 export default function DriverLoginScreen() {
+  useSentryScreen("driver/login");
+
   const [employeeId, setEmployeeId] = useState("");
   const [password, setPassword] = useState("");
   const [secureText, setSecureText] = useState(true);
@@ -116,8 +120,8 @@ export default function DriverLoginScreen() {
                   <Pressable
                     key={option.key}
                     className={`flex-1 items-center rounded-xl border px-4 py-3 ${isActive
-                        ? "border-blue-700 bg-blue-50"
-                        : "border-slate-200 bg-white"
+                      ? "border-blue-700 bg-blue-50"
+                      : "border-slate-200 bg-white"
                       }`}
                     onPress={() => setRole(option.key as "user" | "driver")}
                   >
@@ -150,6 +154,16 @@ export default function DriverLoginScreen() {
           <Pressable
             className="mt-8 flex-row items-center justify-center rounded-xl bg-blue-700 py-4"
             onPress={async () => {
+              addSentryBreadcrumb({
+                category: "auth",
+                message: "Driver login button tapped",
+                level: "info",
+                data: {
+                  role,
+                  hasEmployeeId: Boolean(employeeId.trim()),
+                },
+              });
+
               await login({
                 role,
                 memberId: employeeId,

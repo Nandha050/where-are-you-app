@@ -1,8 +1,11 @@
 import { Redirect } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import { useAuth } from "../../hooks/useAuth";
+import { useSentryScreen } from "../../hooks/useSentryScreen";
 
 export default function UserIndexRedirect() {
+  useSentryScreen("user/index");
+
   const { isAuthenticated, isHydrated, user } = useAuth();
 
   if (!isHydrated) {
