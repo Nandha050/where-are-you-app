@@ -8,6 +8,7 @@ import Svg, { Circle, Polyline as SvgPolyline } from "react-native-svg";
 // ---------------------------------------------------------------------------
 
 type LatLng = { lat: number; lng: number };
+const DEFAULT_FALLBACK_CENTER: LatLng = { lat: 17.385, lng: 78.4867 };
 type StopStatus = "passed" | "next" | "upcoming";
 
 type RouteMapProps = {
@@ -73,9 +74,20 @@ function SvgFallback({
   const projection = useMemo(() => {
     const allPoints = [
       ...coordinates,
-      ...(stops ?? []).map((s) => ({ latitude: s.latitude, longitude: s.longitude })),
+      ...(stops ?? []).map((s) => ({
+        latitude: s.latitude,
+        longitude: s.longitude,
+      })),
       ...(currentLocation ? [currentLocation] : []),
     ];
+
+    if (!allPoints.length) {
+      return {
+        routePoints: [],
+        stopPoints: [],
+        currentPoint: null,
+      };
+    }
 
     const lats = allPoints.map((p) => p.latitude);
     const lngs = allPoints.map((p) => p.longitude);
@@ -118,7 +130,12 @@ function SvgFallback({
           strokeLinejoin="round"
         />
         {routePoints[0] && (
-          <Circle cx={routePoints[0].x} cy={routePoints[0].y} r={10} fill="#22c55e" />
+          <Circle
+            cx={routePoints[0].x}
+            cy={routePoints[0].y}
+            r={10}
+            fill="#22c55e"
+          />
         )}
         {routePoints[routePoints.length - 1] && (
           <Circle
@@ -144,7 +161,12 @@ function SvgFallback({
           />
         ))}
         {currentPoint && (
-          <Circle cx={currentPoint.x} cy={currentPoint.y} r={8} fill="#2563eb" />
+          <Circle
+            cx={currentPoint.x}
+            cy={currentPoint.y}
+            r={8}
+            fill="#2563eb"
+          />
         )}
       </Svg>
     </View>
@@ -167,7 +189,10 @@ export default function RouteMap({
   const path = useMemo<LatLng[]>(() => {
     if (encodedPolyline) {
       try {
-        const decoded = polylineLib.decode(encodedPolyline) as [number, number][];
+        const decoded = polylineLib.decode(encodedPolyline) as [
+          number,
+          number,
+        ][];
         if (decoded.length > 0) {
           return decoded.map(([lat, lng]) => ({ lat, lng }));
         }
@@ -175,7 +200,10 @@ export default function RouteMap({
         // Fallback to pre-decoded coordinates when backend polyline is malformed.
       }
     }
-    return coordinates.map(({ latitude, longitude }) => ({ lat: latitude, lng: longitude }));
+    return coordinates.map(({ latitude, longitude }) => ({
+      lat: latitude,
+      lng: longitude,
+    }));
   }, [encodedPolyline, coordinates]);
 
   const [mapsReady, setMapsReady] = useState(false);
@@ -196,14 +224,14 @@ export default function RouteMap({
 
   // Initialize map and draw the stored-route polyline
   useEffect(() => {
-    if (!mapsReady || !mapDivRef.current || path.length === 0) return;
+    if (!mapsReady || !mapDivRef.current) return;
 
     const g = (window as any).google;
 
     // Create map only once
     if (!mapRef.current) {
       mapRef.current = new g.maps.Map(mapDivRef.current, {
-        center: path[Math.floor(path.length / 2)],
+        center: path[Math.floor(path.length / 2)] ?? DEFAULT_FALLBACK_CENTER,
         zoom: 12,
         disableDefaultUI: true,
         zoomControl: true,
@@ -214,45 +242,52 @@ export default function RouteMap({
     // Replace the route polyline (drawn from the stored encodedPolyline — exact admin route)
     if (routePolylineRef.current) {
       routePolylineRef.current.setMap(null);
+      routePolylineRef.current = null;
     }
-    routePolylineRef.current = new g.maps.Polyline({
-      path,
-      geodesic: true,
-      strokeColor: "#1a73e8",
-      strokeOpacity: 1.0,
-      strokeWeight: 4,
-    });
-    routePolylineRef.current.setMap(mapRef.current);
+    if (path.length > 1) {
+      routePolylineRef.current = new g.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: "#1a73e8",
+        strokeOpacity: 1.0,
+        strokeWeight: 4,
+      });
+      routePolylineRef.current.setMap(mapRef.current);
+    }
 
     // Start/end markers
     endpointMarkersRef.current.start?.setMap(null);
     endpointMarkersRef.current.end?.setMap(null);
-    endpointMarkersRef.current.start = new g.maps.Marker({
-      position: path[0],
-      map: mapRef.current,
-      title: "Start",
-      icon: {
-        path: g.maps.SymbolPath.CIRCLE,
-        scale: 7,
-        fillColor: "#22c55e",
-        fillOpacity: 1,
-        strokeColor: "#ffffff",
-        strokeWeight: 2,
-      },
-    });
-    endpointMarkersRef.current.end = new g.maps.Marker({
-      position: path[path.length - 1],
-      map: mapRef.current,
-      title: "Destination",
-      icon: {
-        path: g.maps.SymbolPath.CIRCLE,
-        scale: 7,
-        fillColor: "#ef4444",
-        fillOpacity: 1,
-        strokeColor: "#ffffff",
-        strokeWeight: 2,
-      },
-    });
+    endpointMarkersRef.current.start = undefined;
+    endpointMarkersRef.current.end = undefined;
+    if (path.length > 0) {
+      endpointMarkersRef.current.start = new g.maps.Marker({
+        position: path[0],
+        map: mapRef.current,
+        title: "Start",
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 7,
+          fillColor: "#22c55e",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+        },
+      });
+      endpointMarkersRef.current.end = new g.maps.Marker({
+        position: path[path.length - 1],
+        map: mapRef.current,
+        title: "Destination",
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 7,
+          fillColor: "#ef4444",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+        },
+      });
+    }
 
     // Ordered stop markers
     stopMarkersRef.current.forEach((marker) => marker.setMap(null));
@@ -280,9 +315,14 @@ export default function RouteMap({
     });
 
     // Fit the viewport to the full route
-    const bounds = new g.maps.LatLngBounds();
-    path.forEach((p: LatLng) => bounds.extend(p));
-    mapRef.current.fitBounds(bounds);
+    if (path.length > 0) {
+      const bounds = new g.maps.LatLngBounds();
+      path.forEach((p: LatLng) => bounds.extend(p));
+      mapRef.current.fitBounds(bounds);
+    } else {
+      mapRef.current.setCenter(DEFAULT_FALLBACK_CENTER);
+      mapRef.current.setZoom(12);
+    }
   }, [mapsReady, path, stops]);
 
   // Update live bus marker whenever currentLocation changes
@@ -298,7 +338,10 @@ export default function RouteMap({
 
     if (currentLocation) {
       busMarkerRef.current = new g.maps.Marker({
-        position: { lat: currentLocation.latitude, lng: currentLocation.longitude },
+        position: {
+          lat: currentLocation.latitude,
+          lng: currentLocation.longitude,
+        },
         map: mapRef.current,
         title: "Bus",
         icon: {

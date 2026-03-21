@@ -4,22 +4,22 @@ import * as Location from "expo-location";
 import { Redirect, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    ScrollView,
-    Text,
-    View,
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { API_BASE_URL } from "../../api/client";
 import {
-    DriverMeSnapshot,
-    getActiveTrip,
-    getDriverMe,
-    getDriverMyRoute,
-    postMyLocation,
-    startTrip,
-    stopTrip,
+  DriverMeSnapshot,
+  getActiveTrip,
+  getDriverMe,
+  getDriverMyRoute,
+  postMyLocation,
+  startTrip,
+  stopTrip,
 } from "../../api/driver";
 import { ActiveTrip } from "../../api/types";
 import RouteMap from "../../components/RouteMap";
@@ -27,8 +27,8 @@ import { useAuth } from "../../hooks/useAuth";
 import { useLocation } from "../../hooks/useLocation";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
 import {
-    addSentryBreadcrumb,
-    captureSentryException,
+  addSentryBreadcrumb,
+  captureSentryException,
 } from "../../monitoring/sentry";
 import { backgroundLocationService } from "../../sockets/backgroundLocationTask";
 import socketService from "../../sockets/socketService";
@@ -275,10 +275,10 @@ export default function DriverTrackingScreen() {
 
   const { isAuthenticated, isHydrated, token } = useAuth();
   const {
-    requestForegroundPermission,
-    hasServicesEnabled,
     getCurrentPosition,
     watchPosition,
+    requestForegroundPermission,
+    hasServicesEnabled,
   } = useLocation();
 
   const [loading, setLoading] = useState(true);

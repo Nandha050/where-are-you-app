@@ -1,5 +1,5 @@
 import polylineLib from "@mapbox/polyline";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import MapView, { Marker, Polyline } from "react-native-maps";
 
 type Coord = { latitude: number; longitude: number };
@@ -29,6 +29,21 @@ export default function RouteMap({
   currentLocation,
   encodedPolyline,
 }: RouteMapProps) {
+  const mapRef = useRef<MapView | null>(null);
+
+  const isFiniteCoord = (point?: Partial<Coord> | null): point is Coord => {
+    if (!point) {
+      return false;
+    }
+
+    return (
+      typeof point.latitude === "number" &&
+      Number.isFinite(point.latitude) &&
+      typeof point.longitude === "number" &&
+      Number.isFinite(point.longitude)
+    );
+  };
+
   // Decode stored route polyline directly — this is the single source of truth.
   // Falls back to coordinatesProp only when no encodedPolyline is available.
   const coordinates = useMemo<Coord[]>(() => {
@@ -39,26 +54,43 @@ export default function RouteMap({
           number,
         ][];
         if (decoded.length > 0) {
-          return decoded.map(([latitude, longitude]) => ({
-            latitude,
-            longitude,
-          }));
+          const fromPolyline = decoded
+            .map(([latitude, longitude]) => ({ latitude, longitude }))
+            .filter((point) => isFiniteCoord(point));
+
+          if (fromPolyline.length > 0) {
+            return fromPolyline;
+          }
         }
       } catch {
         // Fallback to upstream coordinates when backend polyline is malformed.
       }
     }
-    return coordinatesProp;
+    return (coordinatesProp ?? []).filter((point) => isFiniteCoord(point));
   }, [encodedPolyline, coordinatesProp]);
 
+  const validStops = useMemo(() => {
+    return (stops ?? []).filter((stop) => isFiniteCoord(stop));
+  }, [stops]);
+
+  const validCurrentLocation = isFiniteCoord(currentLocation) ? currentLocation : undefined;
+
+  const pointsForRegion = useMemo<Coord[]>(() => {
+    return [
+      ...coordinates,
+      ...validStops.map((stop) => ({ latitude: stop.latitude, longitude: stop.longitude })),
+      ...(validCurrentLocation ? [validCurrentLocation] : []),
+    ];
+  }, [coordinates, validCurrentLocation, validStops]);
+
   const initialRegion = useMemo(() => {
-    const routePoints: Coord[] = [...coordinates, ...stops];
+    const routePoints: Coord[] = pointsForRegion;
     if (!routePoints.length) {
       return {
-        latitude: 0,
-        longitude: 0,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
+        latitude: 17.385,
+        longitude: 78.4867,
+        latitudeDelta: 0.2,
+        longitudeDelta: 0.2,
       };
     }
 
@@ -79,11 +111,27 @@ export default function RouteMap({
       latitudeDelta: Math.max((maxLat - minLat) * 1.6, 0.01),
       longitudeDelta: Math.max((maxLng - minLng) * 1.6, 0.01),
     };
-  }, [coordinates, stops]);
+  }, [pointsForRegion]);
 
-  if (!coordinates.length) {
-    return null;
-  }
+  useEffect(() => {
+    if (!mapRef.current || !pointsForRegion.length) {
+      return;
+    }
+
+    try {
+      mapRef.current.fitToCoordinates(pointsForRegion, {
+        animated: true,
+        edgePadding: {
+          top: 44,
+          right: 44,
+          bottom: 44,
+          left: 44,
+        },
+      });
+    } catch {
+      // MapView can throw if called before fully mounted; initialRegion still keeps map visible.
+    }
+  }, [pointsForRegion]);
 
   const stopPinColor = (status?: StopStatus) => {
     if (status === "passed") return "#10b981";
@@ -93,19 +141,24 @@ export default function RouteMap({
 
   return (
     <MapView
+      ref={(instance) => {
+        mapRef.current = instance;
+      }}
       style={{ flex: 1 }}
       initialRegion={initialRegion}
     >
       {/* Start marker */}
-      <Marker
-        coordinate={coordinates[0]}
-        title="Start"
-        pinColor="#22c55e"
-        tracksViewChanges={false}
-      />
+      {coordinates[0] ? (
+        <Marker
+          coordinate={coordinates[0]}
+          title="Start"
+          pinColor="#22c55e"
+          tracksViewChanges={false}
+        />
+      ) : null}
 
       {/* Stop markers — rendered at their exact stored coordinates */}
-      {stops.map((stop, index) => (
+      {validStops.map((stop, index) => (
         <Marker
           key={`stop-${index}-${stop.sequenceOrder ?? "na"}`}
           coordinate={stop}
@@ -123,25 +176,29 @@ export default function RouteMap({
       ))}
 
       {/* End marker */}
-      <Marker
-        coordinate={coordinates[coordinates.length - 1]}
-        title="Destination"
-        pinColor="#ef4444"
-        tracksViewChanges={false}
-      />
+      {coordinates.length > 1 ? (
+        <Marker
+          coordinate={coordinates[coordinates.length - 1]}
+          title="Destination"
+          pinColor="#ef4444"
+          tracksViewChanges={false}
+        />
+      ) : null}
 
       {/* Route polyline — decoded from stored admin encodedPolyline, passes through every stop */}
-      <Polyline
-        coordinates={coordinates}
-        strokeColor="#1a73e8"
-        strokeWidth={4}
-        geodesic
-      />
+      {coordinates.length > 1 ? (
+        <Polyline
+          coordinates={coordinates}
+          strokeColor="#1a73e8"
+          strokeWidth={4}
+          geodesic
+        />
+      ) : null}
 
       {/* Live bus marker */}
-      {currentLocation ? (
+      {validCurrentLocation ? (
         <Marker
-          coordinate={currentLocation}
+          coordinate={validCurrentLocation}
           title="Bus"
           pinColor="#2563eb"
         />

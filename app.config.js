@@ -1,3 +1,6 @@
+const GOOGLE_MAPS_API_KEY =
+  process.env.GOOGLE_MAPS_API_KEY ?? process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+
 export default {
   expo: {
     name: "where-are-you-application",
@@ -18,6 +21,14 @@ export default {
           "We need your location to track the bus continuously",
         UIBackgroundModes: ["location"],
       },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.maruthikummari.whereareyouapplication",
+      "config": {
+        "googleMaps": {
+          "apiKey": GOOGLE_MAPS_API_KEY
+        }
+      }
     },
     android: {
       adaptiveIcon: {

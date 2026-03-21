@@ -100,6 +100,19 @@ const sameCoord = (a: Coord, b: Coord) =>
   Math.abs(a.latitude - b.latitude) < 1e-6 &&
   Math.abs(a.longitude - b.longitude) < 1e-6;
 
+const isValidCoord = (value?: Partial<Coord> | null): value is Coord => {
+  if (!value) {
+    return false;
+  }
+
+  return (
+    typeof value.latitude === "number" &&
+    Number.isFinite(value.latitude) &&
+    typeof value.longitude === "number" &&
+    Number.isFinite(value.longitude)
+  );
+};
+
 const buildFallbackPath = (
   start: Coord | null,
   orderedStops: OrderedStop[],
@@ -194,7 +207,7 @@ const getFreshnessLabel = (lastUpdated?: string | null): string => {
 export default function UserTrackingScreen() {
   useSentryScreen("user/tracking");
 
-  const { requestForegroundPermission, getCurrentPosition } = useLocation();
+  const { ensureForegroundAccess, getCurrentPositionSafe } = useLocation();
 
   const params = useLocalSearchParams<{
     busId: string | string[];
@@ -251,11 +264,23 @@ export default function UserTrackingScreen() {
           ),
         );
 
-        if (liveData.currentLat != null && liveData.currentLng != null) {
-          setCurrentLocation({
-            latitude: liveData.currentLat,
-            longitude: liveData.currentLng,
+        const liveCoord =
+          liveData.currentLat != null && liveData.currentLng != null
+            ? {
+                latitude: liveData.currentLat,
+                longitude: liveData.currentLng,
+              }
+            : null;
+
+        if (isValidCoord(liveCoord)) {
+          setCurrentLocation(liveCoord);
+          console.log("[UserTracking][location][live]", {
+            busId,
+            latitude: liveCoord.latitude,
+            longitude: liveCoord.longitude,
           });
+        } else {
+          setCurrentLocation(null);
         }
 
         const sortedStops = (liveData.stops ?? [])
@@ -293,7 +318,24 @@ export default function UserTrackingScreen() {
               level: "warning",
             });
             setRouteEncodedPolyline("");
-            setPath([]);
+
+            const start =
+              liveData.routeStartLat != null && liveData.routeStartLng != null
+                ? {
+                    latitude: liveData.routeStartLat,
+                    longitude: liveData.routeStartLng,
+                  }
+                : null;
+
+            const end =
+              liveData.routeEndLat != null && liveData.routeEndLng != null
+                ? {
+                    latitude: liveData.routeEndLat,
+                    longitude: liveData.routeEndLng,
+                  }
+                : null;
+
+            setPath(buildFallbackPath(start, sortedStops, end));
           }
         } else {
           setRouteEncodedPolyline("");
@@ -401,8 +443,10 @@ export default function UserTrackingScreen() {
         event.location?.longitude ??
         event.location?.lng;
 
-      if (typeof latitude === "number" && typeof longitude === "number") {
-        setCurrentLocation({ latitude, longitude });
+      const incomingCoord = { latitude, longitude };
+
+      if (isValidCoord(incomingCoord)) {
+        setCurrentLocation(incomingCoord);
       }
 
       setLive((previous) => {
@@ -465,20 +509,41 @@ export default function UserTrackingScreen() {
         },
       });
 
-      const permission = await requestForegroundPermission(
+      const readiness = await ensureForegroundAccess(
         "user_tracking_subscribe_alerts",
+        {
+          showAlerts: true,
+        },
       );
+
+      console.log("[UserTracking][location][readiness]", {
+        ok: readiness.ok,
+        reason: readiness.reason,
+        servicesEnabled: readiness.servicesEnabled ?? null,
+        permissionGranted: readiness.permission?.granted ?? null,
+      });
+
+      if (!readiness.ok) {
+        return;
+      }
 
       let userLatitude: number | undefined;
       let userLongitude: number | undefined;
 
-      if (permission.granted) {
-        const current = await getCurrentPosition(
+      if (readiness.permission?.granted) {
+        const current = await getCurrentPositionSafe(
           "user_tracking_subscribe_alerts",
           {},
         );
-        userLatitude = current.coords.latitude;
-        userLongitude = current.coords.longitude;
+        if (current) {
+          console.log("[UserTracking][location][subscription]", {
+            busId,
+            latitude: current.coords.latitude,
+            longitude: current.coords.longitude,
+          });
+          userLatitude = current.coords.latitude;
+          userLongitude = current.coords.longitude;
+        }
       }
 
       await createUserSubscription({
@@ -670,26 +735,28 @@ export default function UserTrackingScreen() {
       </View>
 
       <View className="h-[300px] w-full bg-slate-200">
-        {path.length > 1 ? (
-          <RouteMap
-            coordinates={path}
-            encodedPolyline={routeEncodedPolyline || undefined}
-            currentLocation={currentLocation ?? undefined}
-            stops={stopsWithStatus.map((stop) => ({
-              latitude: stop.latitude,
-              longitude: stop.longitude,
-              name: stop.name,
-              sequenceOrder: stop.sequenceOrder,
-              status: stop.status,
-            }))}
-          />
-        ) : (
-          <View className="flex-1 items-center justify-center">
+        <RouteMap
+          coordinates={path ?? []}
+          encodedPolyline={routeEncodedPolyline || undefined}
+          currentLocation={currentLocation ?? undefined}
+          stops={stopsWithStatus.map((stop) => ({
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+            name: stop.name,
+            sequenceOrder: stop.sequenceOrder,
+            status: stop.status,
+          }))}
+        />
+        {path.length <= 1 &&
+        !currentLocation &&
+        stopsWithStatus.length === 0 ? (
+          <View className="absolute inset-0 items-center justify-center bg-slate-200/70">
             <Text className="text-sm text-slate-600">
-              Live route unavailable
+              Live route unavailable. Map will update when location data
+              arrives.
             </Text>
           </View>
-        )}
+        ) : null}
       </View>
 
       <ScrollView
