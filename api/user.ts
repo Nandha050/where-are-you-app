@@ -41,6 +41,19 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
+const toNonEmptyString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length) {
+        return trimmed;
+      }
+    }
+  }
+
+  return null;
+};
+
 const normalizeStop = (stop: any): DriverStop | null => {
   const lat = toNumber(stop?.lat) ?? toNumber(stop?.latitude);
   const lng = toNumber(stop?.lng) ?? toNumber(stop?.longitude);
@@ -107,10 +120,7 @@ const normalizeSearchItem = (item: any): BusSearchResult | null => {
   }
 
   const rawTripStatus =
-    item?.trip?.status ??
-    item?.tripStatus ??
-    item?.bus?.tripStatus ??
-    null;
+    item?.trip?.status ?? item?.tripStatus ?? item?.bus?.tripStatus ?? null;
 
   const normalizedTripStatus =
     typeof rawTripStatus === "string" && rawTripStatus.trim().length
@@ -191,6 +201,45 @@ const normalizeLive = (payload: any): BusLiveStatus => {
     toNumber(route?.end?.longitude) ??
     null;
 
+  const routeStartNameRaw = toNonEmptyString(
+    route?.startName,
+    route?.start?.name,
+    route?.sourceName,
+    route?.originName,
+    route?.startPointName,
+    route?.startLocationName,
+    payload?.routeStartName,
+    payload?.startName,
+    payload?.sourceName,
+    payload?.originName,
+    payload?.startPointName,
+    payload?.startLocationName,
+    payload?.route?.startName,
+    payload?.route?.start?.name,
+    payload?.route?.sourceName,
+    payload?.route?.originName,
+    payload?.route?.startPointName,
+    payload?.route?.startLocationName,
+  );
+
+  const routeEndNameRaw = toNonEmptyString(
+    route?.endName,
+    route?.end?.name,
+    route?.destinationName,
+    route?.endPointName,
+    route?.endLocationName,
+    payload?.routeEndName,
+    payload?.endName,
+    payload?.destinationName,
+    payload?.endPointName,
+    payload?.endLocationName,
+    payload?.route?.endName,
+    payload?.route?.end?.name,
+    payload?.route?.destinationName,
+    payload?.route?.endPointName,
+    payload?.route?.endLocationName,
+  );
+
   const rawRouteId =
     payload?.routeId ??
     route?.id ??
@@ -220,58 +269,71 @@ const normalizeLive = (payload: any): BusLiveStatus => {
       return aOrder - bOrder;
     });
 
+  const fallbackStartName =
+    toNonEmptyString(normalizedStops[0]?.name, rawStops[0]?.name) ?? null;
+  const fallbackEndName =
+    toNonEmptyString(
+      normalizedStops[normalizedStops.length - 1]?.name,
+      rawStops[rawStops.length - 1]?.name,
+    ) ?? null;
+
   return {
     busId: String(
       payload?.busId ??
-      bus?.id ??
-      bus?._id ??
-      payload?.id ??
-      payload?._id ??
-      "",
+        bus?.id ??
+        bus?._id ??
+        payload?.id ??
+        payload?._id ??
+        "",
     ),
     numberPlate: String(
       bus?.numberPlate ??
-      payload?.numberPlate ??
-      payload?.plateNumber ??
-      payload?.bus?.numberPlate ??
-      "",
+        payload?.numberPlate ??
+        payload?.plateNumber ??
+        payload?.bus?.numberPlate ??
+        "",
     ),
     routeName: String(
       route?.name ??
-      payload?.routeName ??
-      payload?.route?.name ??
-      payload?.bus?.routeName ??
-      "Route",
+        payload?.routeName ??
+        payload?.route?.name ??
+        payload?.bus?.routeName ??
+        "Route",
     ),
     routeId: rawRouteId ? String(rawRouteId) : undefined,
     trip: {
-      id: String(
-        payload?.trip?.id ??
-        payload?.trip?._id ??
-        bus?.trip?.id ??
-        bus?.trip?._id ??
-        "",
-      ) || undefined,
-      status: String(
-        payload?.trip?.status ??
-        bus?.trip?.status ??
-        bus?.tripStatus ??
-        payload?.tripStatus ??
-        "",
-      ) || undefined,
+      id:
+        String(
+          payload?.trip?.id ??
+            payload?.trip?._id ??
+            bus?.trip?.id ??
+            bus?.trip?._id ??
+            "",
+        ) || undefined,
+      status:
+        String(
+          payload?.trip?.status ??
+            bus?.trip?.status ??
+            bus?.tripStatus ??
+            payload?.tripStatus ??
+            "",
+        ) || undefined,
     },
     // Prefer the stored route polyline (admin-authored, passes through all stops)
     // over any top-level field that may have been recomputed with traffic avoidance.
     encodedPolyline: String(
       route?.encodedPolyline ??
-      payload?.route?.encodedPolyline ??
-      payload?.encodedPolyline ??
-      "",
+        payload?.route?.encodedPolyline ??
+        payload?.encodedPolyline ??
+        "",
     ),
     routeStartLat,
     routeStartLng,
+    routeStartName:
+      toNonEmptyString(routeStartNameRaw, fallbackStartName) ?? null,
     routeEndLat,
     routeEndLng,
+    routeEndName: toNonEmptyString(routeEndNameRaw, fallbackEndName) ?? null,
     stops: normalizedStops,
     currentLat,
     currentLng,
@@ -349,7 +411,10 @@ const asObject = (value: unknown): Record<string, any> => {
   return {};
 };
 
-const withApiGuard = async <T>(scope: string, handler: () => Promise<T>): Promise<T> => {
+const withApiGuard = async <T>(
+  scope: string,
+  handler: () => Promise<T>,
+): Promise<T> => {
   return withSentrySpan(
     {
       op: "http.client",
@@ -367,7 +432,9 @@ const withApiGuard = async <T>(scope: string, handler: () => Promise<T>): Promis
 
 export const searchUserBuses = async (numberPlate: string) => {
   return withApiGuard("searchUserBuses", async () => {
-    const normalized = String(numberPlate ?? "").trim().toUpperCase();
+    const normalized = String(numberPlate ?? "")
+      .trim()
+      .toUpperCase();
     if (!normalized) {
       return [];
     }
@@ -465,8 +532,8 @@ export const getUserSubscriptions = async () => {
     const payload = unwrap<any>(safeResponse.data as any);
     const list = pickArray(payload);
 
-    return list.filter(
-      (item): item is UserSubscription => Boolean(item && typeof item === "object"),
+    return list.filter((item): item is UserSubscription =>
+      Boolean(item && typeof item === "object"),
     );
   });
 };
@@ -478,7 +545,9 @@ export const deleteUserSubscription = async (subscriptionId: string) => {
       throw new Error("Subscription ID is required");
     }
 
-    const response = await apiClient.delete(`/api/user/subscriptions/${normalizedId}`);
+    const response = await apiClient.delete(
+      `/api/user/subscriptions/${normalizedId}`,
+    );
     return assertAxiosSuccess(response, "deleteUserSubscription");
   });
 };
@@ -506,8 +575,8 @@ export const getUserNotifications = async () => {
     const payload = unwrap<any>(safeResponse.data as any);
     const list = pickArray(payload);
 
-    return list.filter(
-      (item): item is UserNotification => Boolean(item && typeof item === "object"),
+    return list.filter((item): item is UserNotification =>
+      Boolean(item && typeof item === "object"),
     );
   });
 };

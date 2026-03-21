@@ -23,6 +23,7 @@ import { addSentryBreadcrumb } from "../../monitoring/sentry";
 export default function DriverLoginScreen() {
   useSentryScreen("driver/login");
 
+  const [organizationSlug, setOrganizationSlug] = useState("");
   const [employeeId, setEmployeeId] = useState("");
   const [password, setPassword] = useState("");
   const [secureText, setSecureText] = useState(true);
@@ -68,6 +69,24 @@ export default function DriverLoginScreen() {
           <Text className="mt-10 text-2xl font-extrabold text-slate-900">
             Welcome back
           </Text>
+
+          <View className="mt-8">
+            <Text className="mb-2 text-sm font-semibold text-slate-800">
+              Organization Slug
+            </Text>
+            <View className="h-12 flex-row items-center rounded-xl border border-slate-200 px-3">
+              <Entypo name="briefcase" size={16} color="#94a3b8" />
+              <TextInput
+                className="ml-3 flex-1 text-sm text-slate-700"
+                placeholder="Enter your organization slug"
+                placeholderTextColor="#94a3b8"
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={organizationSlug}
+                onChangeText={setOrganizationSlug}
+              />
+            </View>
+          </View>
 
           <View className="mt-8">
             <Text className="mb-2 text-sm font-semibold text-slate-800">
@@ -119,15 +138,17 @@ export default function DriverLoginScreen() {
                 return (
                   <Pressable
                     key={option.key}
-                    className={`flex-1 items-center rounded-xl border px-4 py-3 ${isActive
-                      ? "border-blue-700 bg-blue-50"
-                      : "border-slate-200 bg-white"
-                      }`}
+                    className={`flex-1 items-center rounded-xl border px-4 py-3 ${
+                      isActive
+                        ? "border-blue-700 bg-blue-50"
+                        : "border-slate-200 bg-white"
+                    }`}
                     onPress={() => setRole(option.key as "user" | "driver")}
                   >
                     <Text
-                      className={`text-sm font-semibold ${isActive ? "text-blue-700" : "text-slate-600"
-                        }`}
+                      className={`text-sm font-semibold ${
+                        isActive ? "text-blue-700" : "text-slate-600"
+                      }`}
                     >
                       {option.label}
                     </Text>
@@ -160,17 +181,24 @@ export default function DriverLoginScreen() {
                 level: "info",
                 data: {
                   role,
+                  hasOrganizationSlug: Boolean(organizationSlug.trim()),
                   hasEmployeeId: Boolean(employeeId.trim()),
                 },
               });
 
               await login({
                 role,
-                memberId: employeeId,
-                password,
+                organizationSlug: organizationSlug.trim().toLowerCase(),
+                memberId: employeeId.trim(),
+                password: password.trim(),
               });
             }}
-            disabled={loading || !employeeId || !password}
+            disabled={
+              loading ||
+              !organizationSlug.trim() ||
+              !employeeId.trim() ||
+              !password.trim()
+            }
           >
             {loading && (
               <ActivityIndicator

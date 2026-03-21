@@ -117,8 +117,10 @@ export interface BusLiveStatus {
   encodedPolyline: string;
   routeStartLat?: number | null;
   routeStartLng?: number | null;
+  routeStartName?: string | null;
   routeEndLat?: number | null;
   routeEndLng?: number | null;
+  routeEndName?: string | null;
   stops: DriverStop[];
   currentLat: number | null;
   currentLng: number | null;

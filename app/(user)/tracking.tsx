@@ -20,7 +20,10 @@ import {
 import RouteMap from "../../components/RouteMap";
 import { useLocation } from "../../hooks/useLocation";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
-import { addSentryBreadcrumb, captureSentryException } from "../../monitoring/sentry";
+import {
+  addSentryBreadcrumb,
+  captureSentryException,
+} from "../../monitoring/sentry";
 import socketService from "../../sockets/socketService";
 import authStore from "../../store/auth";
 
@@ -243,7 +246,9 @@ export default function UserTrackingScreen() {
 
         setLive(liveData);
         setIsSubscribed(
-          subscriptions.some((subscription) => String(subscription.busId) === String(busId)),
+          subscriptions.some(
+            (subscription) => String(subscription.busId) === String(busId),
+          ),
         );
 
         if (liveData.currentLat != null && liveData.currentLng != null) {
@@ -265,8 +270,13 @@ export default function UserTrackingScreen() {
         if (liveData.encodedPolyline) {
           setRouteEncodedPolyline(liveData.encodedPolyline);
           try {
-            const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
-            setPath(decoded.map(([latitude, longitude]) => ({ latitude, longitude })));
+            const decoded = polyline.decode(liveData.encodedPolyline) as [
+              number,
+              number,
+            ][];
+            setPath(
+              decoded.map(([latitude, longitude]) => ({ latitude, longitude })),
+            );
           } catch (polylineErr) {
             console.warn("[UserTracking][decodePolyline]", {
               busId,
@@ -291,17 +301,17 @@ export default function UserTrackingScreen() {
           const start =
             liveData.routeStartLat != null && liveData.routeStartLng != null
               ? {
-                latitude: liveData.routeStartLat,
-                longitude: liveData.routeStartLng,
-              }
+                  latitude: liveData.routeStartLat,
+                  longitude: liveData.routeStartLng,
+                }
               : null;
 
           const end =
             liveData.routeEndLat != null && liveData.routeEndLng != null
               ? {
-                latitude: liveData.routeEndLat,
-                longitude: liveData.routeEndLng,
-              }
+                  latitude: liveData.routeEndLat,
+                  longitude: liveData.routeEndLng,
+                }
               : null;
 
           setPath(buildFallbackPath(start, sortedStops, end));
@@ -321,7 +331,9 @@ export default function UserTrackingScreen() {
           },
         });
         setError(
-          err?.response?.data?.message ?? err?.message ?? "Failed to load live bus",
+          err?.response?.data?.message ??
+            err?.message ??
+            "Failed to load live bus",
         );
       } finally {
         setLoading(false);
@@ -409,7 +421,9 @@ export default function UserTrackingScreen() {
             previous.tripStatus,
           nextStop: event.nextStop ?? previous.nextStop,
           estimatedArrival:
-            event.nextStopEta ?? event.estimatedArrival ?? previous.estimatedArrival,
+            event.nextStopEta ??
+            event.estimatedArrival ??
+            previous.estimatedArrival,
           etaToDestinationText:
             event.etaToDestinationText ?? previous.etaToDestinationText,
           lastUpdated: event.timestamp ?? previous.lastUpdated,
@@ -451,13 +465,18 @@ export default function UserTrackingScreen() {
         },
       });
 
-      const permission = await requestForegroundPermission("user_tracking_subscribe_alerts");
+      const permission = await requestForegroundPermission(
+        "user_tracking_subscribe_alerts",
+      );
 
       let userLatitude: number | undefined;
       let userLongitude: number | undefined;
 
       if (permission.granted) {
-        const current = await getCurrentPosition("user_tracking_subscribe_alerts", {});
+        const current = await getCurrentPosition(
+          "user_tracking_subscribe_alerts",
+          {},
+        );
         userLatitude = current.coords.latitude;
         userLongitude = current.coords.longitude;
       }
@@ -500,20 +519,28 @@ export default function UserTrackingScreen() {
     formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
     "-";
 
-  const tripStatusLabel = getTripStatusLabel(live?.trip?.status ?? live?.tripStatus);
+  const tripStatusLabel = getTripStatusLabel(
+    live?.trip?.status ?? live?.tripStatus,
+  );
   const connectionLabel = connection === "live" ? "Live" : "Offline";
   const freshnessLabel = getFreshnessLabel(live?.lastUpdated);
+  const routeStartLabel = live?.routeStartName ?? orderedStops[0]?.name ?? "-";
+  const routeEndLabel =
+    live?.routeEndName ?? orderedStops[orderedStops.length - 1]?.name ?? "-";
 
   const nextStopName =
     live?.nextStop ??
-    orderedStops.find((stop) => typeof stop.etaFromCurrentSeconds === "number")?.name ??
+    orderedStops.find((stop) => typeof stop.etaFromCurrentSeconds === "number")
+      ?.name ??
     orderedStops[0]?.name ??
     "-";
 
   const nextStopEta =
-    orderedStops.find((stop) => stop.name === nextStopName)?.etaFromCurrentText ??
+    orderedStops.find((stop) => stop.name === nextStopName)
+      ?.etaFromCurrentText ??
     formatEtaFromSeconds(
-      orderedStops.find((stop) => stop.name === nextStopName)?.etaFromCurrentSeconds,
+      orderedStops.find((stop) => stop.name === nextStopName)
+        ?.etaFromCurrentSeconds,
     ) ??
     live?.estimatedArrival ??
     "-";
@@ -523,10 +550,14 @@ export default function UserTrackingScreen() {
       return [];
     }
 
-    const hasPassState = orderedStops.some((stop) => typeof stop.isPassed === "boolean");
+    const hasPassState = orderedStops.some(
+      (stop) => typeof stop.isPassed === "boolean",
+    );
 
     if (hasPassState) {
-      const firstNotPassed = orderedStops.findIndex((stop) => stop.isPassed !== true);
+      const firstNotPassed = orderedStops.findIndex(
+        (stop) => stop.isPassed !== true,
+      );
       const nextIndex = firstNotPassed < 0 ? 0 : firstNotPassed;
 
       return orderedStops.map((stop, index) => ({
@@ -542,13 +573,20 @@ export default function UserTrackingScreen() {
 
     const normalizedNextStop = live?.nextStop?.trim().toLowerCase();
     const nextByName = normalizedNextStop
-      ? orderedStops.findIndex((stop) => stop.name?.trim().toLowerCase() === normalizedNextStop)
+      ? orderedStops.findIndex(
+          (stop) => stop.name?.trim().toLowerCase() === normalizedNextStop,
+        )
       : -1;
 
     if (nextByName >= 0) {
       return orderedStops.map((stop, index) => ({
         ...stop,
-        status: index < nextByName ? "passed" : index === nextByName ? "next" : "upcoming",
+        status:
+          index < nextByName
+            ? "passed"
+            : index === nextByName
+              ? "next"
+              : "upcoming",
       }));
     }
 
@@ -575,7 +613,12 @@ export default function UserTrackingScreen() {
 
     return orderedStops.map((stop, index) => ({
       ...stop,
-      status: index < nearestIndex ? "passed" : index === nearestIndex ? "next" : "upcoming",
+      status:
+        index < nearestIndex
+          ? "passed"
+          : index === nearestIndex
+            ? "next"
+            : "upcoming",
     }));
   }, [currentLocation, live?.nextStop, orderedStops]);
 
@@ -601,16 +644,26 @@ export default function UserTrackingScreen() {
   return (
     <SafeAreaView className="flex-1 bg-slate-100">
       <View className="flex-row items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
-        <Pressable onPress={() => router.back()} className="h-10 w-10 items-center justify-center rounded-xl bg-slate-100">
+        <Pressable
+          onPress={() => router.back()}
+          className="h-10 w-10 items-center justify-center rounded-xl bg-slate-100"
+        >
           <Ionicons name="arrow-back" size={20} color="#0f172a" />
         </Pressable>
 
-        <Text className="flex-1 px-2 text-center text-base font-extrabold text-slate-900" numberOfLines={1}>
+        <Text
+          className="flex-1 px-2 text-center text-base font-extrabold text-slate-900"
+          numberOfLines={1}
+        >
           Bus {live?.numberPlate || params.plate || "-"}
         </Text>
 
-        <View className={`rounded-full px-3 py-1 ${connection === "live" ? "bg-emerald-100" : "bg-slate-200"}`}>
-          <Text className={`text-xs font-bold ${connection === "live" ? "text-emerald-700" : "text-slate-600"}`}>
+        <View
+          className={`rounded-full px-3 py-1 ${connection === "live" ? "bg-emerald-100" : "bg-slate-200"}`}
+        >
+          <Text
+            className={`text-xs font-bold ${connection === "live" ? "text-emerald-700" : "text-slate-600"}`}
+          >
             {connectionLabel}
           </Text>
         </View>
@@ -632,7 +685,9 @@ export default function UserTrackingScreen() {
           />
         ) : (
           <View className="flex-1 items-center justify-center">
-            <Text className="text-sm text-slate-600">Live route unavailable</Text>
+            <Text className="text-sm text-slate-600">
+              Live route unavailable
+            </Text>
           </View>
         )}
       </View>
@@ -651,7 +706,11 @@ export default function UserTrackingScreen() {
                 {tripStatusLabel}
               </Text>
             </View>
-            <MaterialCommunityIcons name="bus-clock" size={28} color="#1d4ed8" />
+            <MaterialCommunityIcons
+              name="bus-clock"
+              size={28}
+              color="#1d4ed8"
+            />
           </View>
 
           <Text className="mt-2 text-xs text-slate-500">{freshnessLabel}</Text>
@@ -661,29 +720,51 @@ export default function UserTrackingScreen() {
               <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 ETA to destination
               </Text>
-              <Text className="mt-1 text-base font-bold text-slate-900">{eta}</Text>
+              <Text className="mt-1 text-base font-bold text-slate-900">
+                {eta}
+              </Text>
             </View>
             <View>
               <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Route
               </Text>
-              <Text className="mt-1 text-base font-bold text-slate-900" numberOfLines={1}>
+              <Text
+                className="mt-1 text-base font-bold text-slate-900"
+                numberOfLines={1}
+              >
                 {live?.routeName || params.route || "-"}
               </Text>
             </View>
+          </View>
+
+          <View className="mt-3 rounded-xl bg-slate-100 px-3 py-3">
+            <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Route Points
+            </Text>
+            <Text className="mt-1 text-sm text-slate-700" numberOfLines={1}>
+              Start: {routeStartLabel}
+            </Text>
+            <Text className="mt-1 text-sm text-slate-700" numberOfLines={1}>
+              Destination: {routeEndLabel}
+            </Text>
           </View>
 
           <View className="mt-3 rounded-xl bg-blue-50 px-3 py-3">
             <Text className="text-xs font-semibold uppercase tracking-wider text-blue-700">
               Next Stop
             </Text>
-            <Text className="mt-1 text-base font-bold text-slate-900">{nextStopName}</Text>
-            <Text className="mt-1 text-sm text-slate-600">ETA: {nextStopEta}</Text>
+            <Text className="mt-1 text-base font-bold text-slate-900">
+              {nextStopName}
+            </Text>
+            <Text className="mt-1 text-sm text-slate-600">
+              ETA: {nextStopEta}
+            </Text>
           </View>
 
           <Pressable
-            className={`mt-4 flex-row items-center justify-center rounded-xl px-4 py-3 ${isSubscribed ? "bg-emerald-100" : "bg-blue-700"
-              }`}
+            className={`mt-4 flex-row items-center justify-center rounded-xl px-4 py-3 ${
+              isSubscribed ? "bg-emerald-100" : "bg-blue-700"
+            }`}
             onPress={subscribeForAlerts}
             disabled={submittingSubscription || isSubscribed}
           >
@@ -692,11 +773,15 @@ export default function UserTrackingScreen() {
             ) : (
               <>
                 <Ionicons
-                  name={isSubscribed ? "notifications" : "notifications-outline"}
+                  name={
+                    isSubscribed ? "notifications" : "notifications-outline"
+                  }
                   size={18}
                   color={isSubscribed ? "#047857" : "white"}
                 />
-                <Text className={`ml-2 text-sm font-bold ${isSubscribed ? "text-emerald-700" : "text-white"}`}>
+                <Text
+                  className={`ml-2 text-sm font-bold ${isSubscribed ? "text-emerald-700" : "text-white"}`}
+                >
                   {isSubscribed ? "Subscribed" : "Subscribe for alerts"}
                 </Text>
               </>
@@ -714,15 +799,19 @@ export default function UserTrackingScreen() {
           ) : (
             <View>
               {stopsWithStatus.map((stop, index) => (
-                <View key={stop.id ?? `${stop.name}-${index}`} className="mb-3 flex-row">
+                <View
+                  key={stop.id ?? `${stop.name}-${index}`}
+                  className="mb-3 flex-row"
+                >
                   <View className="mr-3 items-center" style={{ width: 18 }}>
                     <View
-                      className={`h-3.5 w-3.5 rounded-full ${stop.status === "passed"
-                        ? "bg-emerald-500"
-                        : stop.status === "next"
-                          ? "bg-blue-600"
-                          : "bg-amber-400"
-                        }`}
+                      className={`h-3.5 w-3.5 rounded-full ${
+                        stop.status === "passed"
+                          ? "bg-emerald-500"
+                          : stop.status === "next"
+                            ? "bg-blue-600"
+                            : "bg-amber-400"
+                      }`}
                     />
                     {index < stopsWithStatus.length - 1 ? (
                       <View className="mt-1 h-8 w-0.5 bg-slate-200" />
@@ -730,16 +819,22 @@ export default function UserTrackingScreen() {
                   </View>
 
                   <View className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
-                    <Text className="text-sm font-semibold text-slate-900" numberOfLines={1}>
-                      {(stop.sequenceOrder ?? index + 1) + ". " + (stop.name || "Stop")}
+                    <Text
+                      className="text-sm font-semibold text-slate-900"
+                      numberOfLines={1}
+                    >
+                      {(stop.sequenceOrder ?? index + 1) +
+                        ". " +
+                        (stop.name || "Stop")}
                     </Text>
                     <Text
-                      className={`mt-0.5 text-xs font-semibold ${stop.status === "passed"
-                        ? "text-emerald-600"
-                        : stop.status === "next"
-                          ? "text-blue-700"
-                          : "text-amber-700"
-                        }`}
+                      className={`mt-0.5 text-xs font-semibold ${
+                        stop.status === "passed"
+                          ? "text-emerald-600"
+                          : stop.status === "next"
+                            ? "text-blue-700"
+                            : "text-amber-700"
+                      }`}
                     >
                       {stop.status === "passed"
                         ? "Passed"
@@ -748,18 +843,25 @@ export default function UserTrackingScreen() {
                           : "Upcoming"}
                     </Text>
                     <Text className="mt-1 text-xs text-slate-600">
-                      {`From bus: ${stop.distanceFromCurrentText ??
-                        formatDistanceFromMeters(stop.distanceFromCurrentMeters) ??
+                      {`From bus: ${
+                        stop.distanceFromCurrentText ??
+                        formatDistanceFromMeters(
+                          stop.distanceFromCurrentMeters,
+                        ) ??
                         "distance --"
-                        } • ${stop.etaFromCurrentText ??
+                      } • ${
+                        stop.etaFromCurrentText ??
                         formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
                         "ETA --"
-                        }`}
+                      }`}
                     </Text>
                     {stop.segmentDistanceText || stop.segmentEtaText ? (
                       <Text className="mt-0.5 text-[11px] text-slate-500">
-                        {`From previous: ${stop.segmentDistanceText ?? "-"}${stop.segmentDistanceText && stop.segmentEtaText ? " • " : ""
-                          }${stop.segmentEtaText ?? "-"}`}
+                        {`From previous: ${stop.segmentDistanceText ?? "-"}${
+                          stop.segmentDistanceText && stop.segmentEtaText
+                            ? " • "
+                            : ""
+                        }${stop.segmentEtaText ?? "-"}`}
                       </Text>
                     ) : null}
                   </View>

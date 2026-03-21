@@ -1,22 +1,197 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
-import * as BackgroundFetch from "expo-background-fetch";
 import * as Location from "expo-location";
 import * as SecureStore from "expo-secure-store";
 import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
+import socketService from "./socketService";
 
 const LOCATION_TASK_NAME = "background-location-task";
-const BG_FETCH_TASK_NAME = "driver-location-sync-task";
 const LOCATION_TRACKING_ENABLED_KEY = "location_tracking_enabled";
 const ASSIGNED_BUS_ID_KEY = "assigned_bus_id";
 const AUTH_TOKEN_KEY = "auth_token";
+const LOCATION_QUEUE_KEY = "driver_location_queue";
+const LAST_HANDLED_LOCATION_KEY = "last_handled_driver_location";
+const MIN_DISTANCE_METERS = 5;
+const MIN_TIME_DELTA_MS = 5000;
 
-const sendLocationToBackend = async (location: {
+type LocationPayload = {
   latitude: number;
   longitude: number;
-  speed?: number | null;
-  timestamp?: string;
-}): Promise<boolean> => {
+  speed: number;
+  timestamp: string;
+};
+
+type LastHandledLocation = {
+  latitude: number;
+  longitude: number;
+  timestamp: number;
+};
+
+let lastHandledCache: LastHandledLocation | null = null;
+
+const toRadians = (value: number): number => (value * Math.PI) / 180;
+
+const distanceMeters = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number => {
+  const R = 6371000;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) *
+      Math.cos(toRadians(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const readQueue = async (): Promise<LocationPayload[]> => {
+  try {
+    const raw = await AsyncStorage.getItem(LOCATION_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as LocationPayload[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeQueue = async (queue: LocationPayload[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(LOCATION_QUEUE_KEY, JSON.stringify(queue));
+  } catch (err) {
+    console.warn(
+      "[backgroundLocationService] Failed to persist location queue",
+      err,
+    );
+  }
+};
+
+const enqueueLocation = async (payload: LocationPayload): Promise<void> => {
+  const queue = await readQueue();
+  queue.push(payload);
+  await writeQueue(queue.slice(-300));
+};
+
+const readLastHandled = async (): Promise<LastHandledLocation | null> => {
+  if (lastHandledCache) {
+    return lastHandledCache;
+  }
+
+  try {
+    const raw = await AsyncStorage.getItem(LAST_HANDLED_LOCATION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LastHandledLocation;
+    if (
+      typeof parsed?.latitude === "number" &&
+      typeof parsed?.longitude === "number" &&
+      typeof parsed?.timestamp === "number"
+    ) {
+      lastHandledCache = parsed;
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
+const writeLastHandled = async (value: LastHandledLocation): Promise<void> => {
+  lastHandledCache = value;
+  try {
+    await AsyncStorage.setItem(
+      LAST_HANDLED_LOCATION_KEY,
+      JSON.stringify(value),
+    );
+  } catch {
+    // Non-critical; filtering still works for current runtime via memory cache.
+  }
+};
+
+const shouldSkipLocation = async (
+  payload: LocationPayload,
+): Promise<boolean> => {
+  const lastHandled = await readLastHandled();
+  if (!lastHandled) {
+    return false;
+  }
+
+  const deltaMs = Math.abs(
+    new Date(payload.timestamp).getTime() - lastHandled.timestamp,
+  );
+  const movedMeters = distanceMeters(
+    lastHandled.latitude,
+    lastHandled.longitude,
+    payload.latitude,
+    payload.longitude,
+  );
+
+  return movedMeters < MIN_DISTANCE_METERS && deltaMs < MIN_TIME_DELTA_MS;
+};
+
+const emitSocketLocation = (payload: LocationPayload): void => {
+  try {
+    if (!socketService.isConnected()) {
+      return;
+    }
+
+    const socket = socketService.getSocket();
+    if (!socket) {
+      return;
+    }
+
+    socket.emit("driverLocationUpdate", payload);
+  } catch (err) {
+    console.warn("[backgroundLocationService] Socket emit failed", err);
+  }
+};
+
+const sendHttpLocation = async (
+  payload: LocationPayload,
+  token: string,
+  backendUrl: string,
+): Promise<void> => {
+  await axios.post(`${backendUrl}/api/tracking/me/location`, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 8000,
+  });
+};
+
+const flushQueue = async (token: string, backendUrl: string): Promise<void> => {
+  const queue = await readQueue();
+  if (!queue.length) {
+    return;
+  }
+
+  const pending: LocationPayload[] = [];
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    try {
+      await sendHttpLocation(item, token, backendUrl);
+      emitSocketLocation(item);
+    } catch {
+      pending.push(...queue.slice(index));
+      break;
+    }
+  }
+
+  await writeQueue(pending);
+};
+
+const sendLocationToBackend = async (
+  payload: LocationPayload,
+): Promise<boolean> => {
   try {
     const trackingEnabled = await getStoredValue(LOCATION_TRACKING_ENABLED_KEY);
     if (trackingEnabled !== "true") {
@@ -31,28 +206,16 @@ const sendLocationToBackend = async (location: {
       return false;
     }
 
-    const payload = {
-      latitude: location.latitude,
-      longitude: location.longitude,
-      speed: location.speed ?? 0,
-      timestamp: location.timestamp ?? new Date().toISOString(),
-    };
-
-    // Use the same endpoint as foreground tracking to avoid API contract mismatch.
-    await axios.post(`${backendUrl}/api/tracking/me/location`, payload, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 8000,
-    });
-
+    await sendHttpLocation(payload, token, backendUrl);
+    emitSocketLocation(payload);
+    await flushQueue(token, backendUrl);
     return true;
   } catch (err: any) {
     console.warn("[backgroundLocationService] sendLocationToBackend failed", {
       status: err?.response?.status,
       message: err?.message,
     });
+    await enqueueLocation(payload);
     return false;
   }
 };
@@ -118,96 +281,23 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       return;
     }
 
-    await sendLocationToBackend({
+    const payload: LocationPayload = {
       latitude: latestLocation.coords.latitude,
       longitude: latestLocation.coords.longitude,
-      speed: latestLocation.coords.speed,
+      speed: latestLocation.coords.speed ?? 0,
       timestamp: new Date(latestLocation.timestamp).toISOString(),
-    });
+    };
+
+    if (!(await shouldSkipLocation(payload))) {
+      await writeLastHandled({
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        timestamp: new Date(payload.timestamp).getTime(),
+      });
+      await sendLocationToBackend(payload);
+    }
   } catch (err) {
     console.error(`[${LOCATION_TASK_NAME}] Fatal error:`, err);
-  }
-});
-
-// Define background fetch task for sending locations to server
-TaskManager.defineTask(BG_FETCH_TASK_NAME, async () => {
-  try {
-    console.log(
-      `[${BG_FETCH_TASK_NAME}] Task running at ${new Date().toISOString()}`,
-    );
-
-    // Check if tracking is enabled
-    const trackingEnabled = await getStoredValue(LOCATION_TRACKING_ENABLED_KEY);
-    if (trackingEnabled !== "true") {
-      return BackgroundFetch.BackgroundFetchResult.NoData;
-    }
-
-    // Ensure mandatory values exist
-    const token = await getStoredValue(AUTH_TOKEN_KEY);
-    const busId = await getStoredValue(ASSIGNED_BUS_ID_KEY);
-    if (!token || !busId) {
-      return BackgroundFetch.BackgroundFetchResult.Failed;
-    }
-
-    // Try multiple methods to get location (aggressive fallback)
-    let currentLocation: Location.LocationObject | null = null;
-
-    try {
-      // Method 1: Try high accuracy with timeout
-      currentLocation = await Promise.race([
-        Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("timeout")), 5000),
-        ),
-      ]);
-    } catch {
-      try {
-        // Method 2: Try balanced accuracy
-        currentLocation = await Promise.race([
-          Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("timeout")), 3000),
-          ),
-        ]);
-      } catch {
-        // Method 3: Use last known position
-        try {
-          currentLocation = await Location.getLastKnownPositionAsync();
-        } catch {
-          currentLocation = null;
-        }
-      }
-    }
-
-    // If no location, don't stop - just retry next interval
-    if (!currentLocation) {
-      console.warn(
-        `[${BG_FETCH_TASK_NAME}] No location available, retrying next interval`,
-      );
-      return BackgroundFetch.BackgroundFetchResult.NoData;
-    }
-
-    const sent = await sendLocationToBackend({
-      latitude: currentLocation.coords.latitude,
-      longitude: currentLocation.coords.longitude,
-      speed: currentLocation.coords.speed ?? 0,
-      timestamp: new Date().toISOString(),
-    });
-
-    if (sent) {
-      console.log(`[${BG_FETCH_TASK_NAME}] Location sent`);
-      return BackgroundFetch.BackgroundFetchResult.NewData;
-    }
-
-    return BackgroundFetch.BackgroundFetchResult.Failed;
-  } catch (err) {
-    console.error(`[${BG_FETCH_TASK_NAME}] Task error:`, err);
-    // Keep task alive despite errors
-    return BackgroundFetch.BackgroundFetchResult.Failed;
   }
 });
 
@@ -269,14 +359,12 @@ export const backgroundLocationService = {
 
         if (!isRegistered) {
           await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 5000, // 5 seconds
-            distanceInterval: 0, // allow time-based updates even with low movement
-            deferredUpdatesInterval: 5000,
-            deferredUpdatesDistance: 0,
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 3000,
+            distanceInterval: 5,
             foregroundService: {
-              notificationTitle: "Bus Tracking Active",
-              notificationBody: "Your location is being shared in real-time",
+              notificationTitle: "Live Tracking Active",
+              notificationBody: "Your location is being shared in background",
               notificationColor: "#1d4ed8",
             },
           });
@@ -284,24 +372,6 @@ export const backgroundLocationService = {
             "[backgroundLocationService] Started background location updates",
           );
         }
-      }
-
-      // Start background fetch task
-      // This periodically syncs location to server
-      try {
-        await BackgroundFetch.registerTaskAsync(BG_FETCH_TASK_NAME, {
-          minimumInterval: 5, // Every 5 seconds minimum
-          stopOnTerminate: false, // Continue even if app is terminated
-          startOnBoot: true, // Start on device boot
-        });
-        console.log(
-          "[backgroundLocationService] Registered background fetch task",
-        );
-      } catch (err) {
-        console.warn(
-          "[backgroundLocationService] Background fetch not available:",
-          err,
-        );
       }
 
       return true;
@@ -334,23 +404,6 @@ export const backgroundLocationService = {
             "[backgroundLocationService] Stopped background location updates",
           );
         }
-      }
-
-      // Unregister background fetch
-      try {
-        const fetchRegistered =
-          await TaskManager.isTaskRegisteredAsync(BG_FETCH_TASK_NAME);
-        if (fetchRegistered) {
-          await BackgroundFetch.unregisterTaskAsync(BG_FETCH_TASK_NAME);
-          console.log(
-            "[backgroundLocationService] Unregistered background fetch",
-          );
-        }
-      } catch (err) {
-        console.warn(
-          "[backgroundLocationService] Warning unregistering fetch:",
-          err,
-        );
       }
 
       return true;

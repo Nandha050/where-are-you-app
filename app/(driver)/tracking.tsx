@@ -2,24 +2,24 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
 import * as Location from "expo-location";
 import { Redirect, router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
+    ActivityIndicator,
+    Pressable,
+    ScrollView,
+    Text,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { API_BASE_URL } from "../../api/client";
 import {
-  DriverMeSnapshot,
-  getActiveTrip,
-  getDriverMe,
-  getDriverMyRoute,
-  postMyLocation,
-  startTrip,
-  stopTrip,
+    DriverMeSnapshot,
+    getActiveTrip,
+    getDriverMe,
+    getDriverMyRoute,
+    postMyLocation,
+    startTrip,
+    stopTrip,
 } from "../../api/driver";
 import { ActiveTrip } from "../../api/types";
 import RouteMap from "../../components/RouteMap";
@@ -27,8 +27,8 @@ import { useAuth } from "../../hooks/useAuth";
 import { useLocation } from "../../hooks/useLocation";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
 import {
-  addSentryBreadcrumb,
-  captureSentryException,
+    addSentryBreadcrumb,
+    captureSentryException,
 } from "../../monitoring/sentry";
 import { backgroundLocationService } from "../../sockets/backgroundLocationTask";
 import socketService from "../../sockets/socketService";
@@ -308,6 +308,7 @@ export default function DriverTrackingScreen() {
   const watchRef = useRef<Location.LocationSubscription | null>(null);
   const latestLocationRef = useRef<CoordinateWithSpeed | null>(null);
   const sendingRef = useRef(false);
+  const recoveryAttemptKeyRef = useRef<string | null>(null);
 
   const assignedBusId = assignment.bus?.id;
   const hasAssignment = Boolean(assignment.bus?.id && assignment.route?.id);
@@ -800,6 +801,56 @@ export default function DriverTrackingScreen() {
     token,
     uiState.trip?.id,
   ]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isTripActive || !token || !assignedBusId) {
+      recoveryAttemptKeyRef.current = null;
+      return;
+    }
+
+    const recoveryKey = `${uiState.trip?.id ?? "active"}:${String(assignedBusId)}`;
+    if (recoveryAttemptKeyRef.current === recoveryKey) {
+      return;
+    }
+
+    recoveryAttemptKeyRef.current = recoveryKey;
+    let cancelled = false;
+
+    const recoverBackgroundTracking = async () => {
+      try {
+        const wasEnabled = await backgroundLocationService.isTrackingEnabled();
+        if (!wasEnabled) {
+          return;
+        }
+
+        const recovered =
+          await backgroundLocationService.startBackgroundTracking(
+            token,
+            String(assignedBusId),
+          );
+
+        if (!recovered && !cancelled) {
+          setSendNote(
+            "Background tracking is not active. Grant background location permission.",
+          );
+        }
+      } catch (err) {
+        captureSentryException(err, {
+          tags: {
+            area: "driver_tracking",
+            operation: "recover_background_tracking",
+          },
+          level: "warning",
+        });
+      }
+    };
+
+    void recoverBackgroundTracking();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assignedBusId, isAuthenticated, isTripActive, token, uiState.trip?.id]);
 
   // Cleanup background tracking when logging out
   useFocusEffect(
