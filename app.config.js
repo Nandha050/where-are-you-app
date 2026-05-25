@@ -4,13 +4,19 @@ const GOOGLE_MAPS_API_KEY =
 export default {
   expo: {
     name: "where-are-you-application",
-    slug: "where-are-you-application",
-    version: "1.0.0",
+    slug: "where-are-you-live",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
-    scheme: "whereareyouapplication",
+    scheme: "whereareyoulive",
     userInterfaceStyle: "automatic",
+    owner: "whereareyou",
+    extra: {
+      eas: {
+        projectId: "a002b494-eca3-4a82-b9ea-231745e9212d",
+      },
+    },
     ios: {
+      bundleIdentifier: "com.maruthikummari.whereareyoulive",
       supportsTablet: true,
       infoPlist: {
         NSLocationWhenInUseUsageDescription:
@@ -21,24 +27,20 @@ export default {
           "We need your location to track the bus continuously",
         UIBackgroundModes: ["location"],
       },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false,
-      "package": "com.maruthikummari.whereareyouapplication",
-      "config": {
-        "googleMaps": {
-          "apiKey": GOOGLE_MAPS_API_KEY
-        }
-      }
+      config: {
+        googleMapsApiKey: GOOGLE_MAPS_API_KEY,
+      },
     },
     android: {
+      package: "com.maruthikummari.whereareyoulive",
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
         foregroundImage: "./assets/images/android-icon-foreground.png",
         backgroundImage: "./assets/images/android-icon-background.png",
         monochromeImage: "./assets/images/android-icon-monochrome.png",
       },
+      edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
-      package: "com.maruthikummari.whereareyouapplication",
       permissions: [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -49,7 +51,7 @@ export default {
       ],
       config: {
         googleMaps: {
-          apiKey: process.env.GOOGLE_MAPS_API_KEY,
+          apiKey: GOOGLE_MAPS_API_KEY,
         },
       },
     },
@@ -60,6 +62,7 @@ export default {
     },
     plugins: [
       "expo-router",
+      "expo-font",
       [
         "expo-splash-screen",
         {
@@ -92,12 +95,5 @@ export default {
       typedRoutes: true,
       reactCompiler: true,
     },
-    extra: {
-      router: {},
-      eas: {
-        projectId: "598824a5-d7a9-4e70-917b-8824eaddd725",
-      },
-    },
-    owner: "maruthikummari",
   },
 };

@@ -71,6 +71,12 @@ export interface DriverStop {
   segmentDistanceText?: string;
   segmentEtaSeconds?: number;
   segmentEtaText?: string;
+  arrivalClockTimeText?: string;
+  departedClockTimeText?: string;
+  status?: "passed" | "current" | "upcoming";
+  leftSubLabel?: string;
+  rightPrimaryLabel?: string;
+  rightSecondaryLabel?: string;
   isPassed?: boolean;
 }
 

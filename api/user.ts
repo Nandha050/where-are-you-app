@@ -94,6 +94,19 @@ const normalizeStop = (stop: any): DriverStop | null => {
       toNumber(stop?.segmentSeconds) ??
       undefined,
     segmentEtaText: stop?.segmentEtaText ?? stop?.segmentEta ?? undefined,
+    arrivalClockTimeText:
+      stop?.arrivalClockTimeText ?? stop?.arrivalTimeText ?? undefined,
+    departedClockTimeText:
+      stop?.departedClockTimeText ?? stop?.departedTimeText ?? undefined,
+    status:
+      stop?.status === "passed" ||
+        stop?.status === "current" ||
+        stop?.status === "upcoming"
+        ? stop.status
+        : undefined,
+    leftSubLabel: stop?.leftSubLabel ?? undefined,
+    rightPrimaryLabel: stop?.rightPrimaryLabel ?? undefined,
+    rightSecondaryLabel: stop?.rightSecondaryLabel ?? undefined,
     isPassed:
       typeof stop?.isPassed === "boolean"
         ? stop.isPassed
@@ -280,52 +293,52 @@ const normalizeLive = (payload: any): BusLiveStatus => {
   return {
     busId: String(
       payload?.busId ??
-        bus?.id ??
-        bus?._id ??
-        payload?.id ??
-        payload?._id ??
-        "",
+      bus?.id ??
+      bus?._id ??
+      payload?.id ??
+      payload?._id ??
+      "",
     ),
     numberPlate: String(
       bus?.numberPlate ??
-        payload?.numberPlate ??
-        payload?.plateNumber ??
-        payload?.bus?.numberPlate ??
-        "",
+      payload?.numberPlate ??
+      payload?.plateNumber ??
+      payload?.bus?.numberPlate ??
+      "",
     ),
     routeName: String(
       route?.name ??
-        payload?.routeName ??
-        payload?.route?.name ??
-        payload?.bus?.routeName ??
-        "Route",
+      payload?.routeName ??
+      payload?.route?.name ??
+      payload?.bus?.routeName ??
+      "Route",
     ),
     routeId: rawRouteId ? String(rawRouteId) : undefined,
     trip: {
       id:
         String(
           payload?.trip?.id ??
-            payload?.trip?._id ??
-            bus?.trip?.id ??
-            bus?.trip?._id ??
-            "",
+          payload?.trip?._id ??
+          bus?.trip?.id ??
+          bus?.trip?._id ??
+          "",
         ) || undefined,
       status:
         String(
           payload?.trip?.status ??
-            bus?.trip?.status ??
-            bus?.tripStatus ??
-            payload?.tripStatus ??
-            "",
+          bus?.trip?.status ??
+          bus?.tripStatus ??
+          payload?.tripStatus ??
+          "",
         ) || undefined,
     },
     // Prefer the stored route polyline (admin-authored, passes through all stops)
     // over any top-level field that may have been recomputed with traffic avoidance.
     encodedPolyline: String(
       route?.encodedPolyline ??
-        payload?.route?.encodedPolyline ??
-        payload?.encodedPolyline ??
-        "",
+      payload?.route?.encodedPolyline ??
+      payload?.encodedPolyline ??
+      "",
     ),
     routeStartLat,
     routeStartLng,

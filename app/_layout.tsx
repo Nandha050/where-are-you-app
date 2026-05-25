@@ -1,16 +1,30 @@
+import {
+  Poppins_400Regular,
+  Poppins_500Medium,
+  Poppins_600SemiBold,
+  Poppins_700Bold,
+  Poppins_800ExtraBold,
+  Poppins_900Black,
+  useFonts,
+} from "@expo-google-fonts/poppins";
 import * as Sentry from "@sentry/react-native";
 import { Stack, useSegments, type ErrorBoundaryProps } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
 import { reaction } from "mobx";
 import { useEffect } from "react";
+import { Text, TextInput } from "react-native";
 import AppErrorBoundary from "../components/ErrorBoundary";
 import "../global.css";
 import {
-    addSentryBreadcrumb,
-    clearSentryUserContext,
-    setSentryUserContext,
-    setupSentryGlobalHandlers,
+  addSentryBreadcrumb,
+  clearSentryUserContext,
+  setSentryUserContext,
+  setupSentryGlobalHandlers,
 } from "../monitoring/sentry";
 import authStore from "../store/auth";
+
+// Keep splash screen visible while we fetch resources
+SplashScreen.preventAutoHideAsync();
 
 const SENTRY_DSN =
   String(process.env.EXPO_PUBLIC_SENTRY_DSN ?? "").trim() ||
@@ -72,8 +86,44 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 export default Sentry.wrap(function RootLayout() {
   const segments = useSegments();
+  const [fontsLoaded, fontError] = useFonts({
+    Poppins_400Regular,
+    Poppins_500Medium,
+    Poppins_600SemiBold,
+    Poppins_700Bold,
+    Poppins_800ExtraBold,
+    Poppins_900Black,
+  });
 
   useEffect(() => {
+    if (!fontsLoaded && !fontError) {
+      return;
+    }
+
+    if (fontError) {
+      console.warn("[RootLayout] Failed to load Poppins fonts:", fontError);
+    }
+
+    void SplashScreen.hideAsync();
+  }, [fontError, fontsLoaded]);
+
+  // Sentry setup
+  useEffect(() => {
+    if (!fontsLoaded) return;
+
+    const defaultFontStyle = { fontFamily: "Poppins_400Regular" };
+    const TextComponent = Text as unknown as { defaultProps?: Record<string, unknown> };
+    const TextInputComponent = TextInput as unknown as { defaultProps?: Record<string, unknown> };
+
+    TextComponent.defaultProps = {
+      ...(TextComponent.defaultProps ?? {}),
+      style: [defaultFontStyle, TextComponent.defaultProps?.style],
+    };
+    TextInputComponent.defaultProps = {
+      ...(TextInputComponent.defaultProps ?? {}),
+      style: [defaultFontStyle, TextInputComponent.defaultProps?.style],
+    };
+
     setupSentryGlobalHandlers();
 
     const dispose = reaction(
@@ -94,7 +144,7 @@ export default Sentry.wrap(function RootLayout() {
     );
 
     return dispose;
-  }, []);
+  }, [fontsLoaded]);
 
   useEffect(() => {
     const routePath = segments.filter(Boolean).join("/") || "root";

@@ -22,11 +22,18 @@ const normalizeSocketUrl = (rawUrl: string) => {
   }
 };
 
+export type SocketConnectionStatus =
+  | "connected"
+  | "reconnecting"
+  | "offline";
+
 class SocketService {
   private socket: Socket | null = null;
   private activeBusRooms = new Set<string>();
+  private activeRouteRooms = new Set<string>();
   private connectionUrl: string | null = null;
   private reconnectAttemptListeners = new Set<(attempt: unknown) => void>();
+  private connectionStatus: SocketConnectionStatus = "offline";
 
   connect(url: string, token?: string): void {
     const normalizedUrl = normalizeSocketUrl(url);
@@ -133,6 +140,7 @@ class SocketService {
     this.connectionUrl = normalizedUrl;
 
     socket.on("connect", () => {
+      this.connectionStatus = "connected";
       console.log("Connected to socket server");
       addSentryBreadcrumb({
         category: "socket",
@@ -141,14 +149,19 @@ class SocketService {
         data: {
           normalizedUrl,
           joinedRooms: Array.from(this.activeBusRooms),
+          joinedRouteRooms: Array.from(this.activeRouteRooms),
         },
       });
       this.activeBusRooms.forEach((busId) => {
         socket.emit("joinBusRoom", String(busId));
       });
+      this.activeRouteRooms.forEach((routeId) => {
+        socket.emit("joinRoute", String(routeId));
+      });
     });
 
     socket.on("disconnect", (reason: unknown) => {
+      this.connectionStatus = "offline";
       console.log("Disconnected from socket server", reason);
       addSentryBreadcrumb({
         category: "socket",
@@ -176,6 +189,7 @@ class SocketService {
     });
 
     socket.io.on("reconnect_attempt", (attempt: unknown) => {
+      this.connectionStatus = "reconnecting";
       console.log("Socket reconnect attempt", attempt);
       addSentryBreadcrumb({
         category: "socket",
@@ -189,6 +203,7 @@ class SocketService {
     });
 
     socket.io.on("reconnect", (attempt: unknown) => {
+      this.connectionStatus = "connected";
       console.log("Socket reconnected", attempt);
       addSentryBreadcrumb({
         category: "socket",
@@ -323,6 +338,14 @@ class SocketService {
     return Boolean(this.socket?.connected);
   }
 
+  getConnectionStatus(): SocketConnectionStatus {
+    if (this.socket?.connected) {
+      return "connected";
+    }
+
+    return this.connectionStatus;
+  }
+
   joinBusRoom(busId: string): void {
     const normalized = String(busId || "").trim();
     if (!normalized) {
@@ -363,6 +386,43 @@ class SocketService {
     }
   }
 
+  joinRouteRoom(routeId: string): void {
+    const normalized = String(routeId || "").trim();
+    if (!normalized) {
+      return;
+    }
+
+    this.activeRouteRooms.add(normalized);
+    if (this.socket?.connected) {
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Join route room",
+        level: "info",
+        data: {
+          routeId: normalized,
+        },
+      });
+      this.socket.emit("joinRoute", normalized);
+    }
+  }
+
+  leaveRouteRoom(routeId: string): void {
+    const normalized = String(routeId || "").trim();
+    if (!normalized) {
+      return;
+    }
+
+    this.activeRouteRooms.delete(normalized);
+    addSentryBreadcrumb({
+      category: "socket",
+      message: "Leave route room",
+      level: "info",
+      data: {
+        routeId: normalized,
+      },
+    });
+  }
+
   disconnect(): void {
     addSentryBreadcrumb({
       category: "socket",
@@ -370,13 +430,16 @@ class SocketService {
       level: "info",
       data: {
         roomCount: this.activeBusRooms.size,
+        routeRoomCount: this.activeRouteRooms.size,
       },
     });
 
     this.socket?.disconnect();
     this.socket = null;
+    this.connectionStatus = "offline";
     this.connectionUrl = null;
     this.activeBusRooms.clear();
+    this.activeRouteRooms.clear();
   }
 
   /**

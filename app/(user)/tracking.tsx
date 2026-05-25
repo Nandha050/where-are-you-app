@@ -1,57 +1,59 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  LayoutAnimation,
+  Platform,
   Pressable,
-  ScrollView,
   Text,
+  UIManager,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { API_BASE_URL } from "../../api/client";
 import { BusLiveStatus, DriverStop } from "../../api/types";
 import {
   createUserSubscription,
   getUserBusLive,
   getUserSubscriptions,
 } from "../../api/user";
+import { BottomSheet, type BottomSheetState } from "../../components/BottomSheet";
+import { BottomSheetContent } from "../../components/BottomSheetContent";
 import RouteMap from "../../components/RouteMap";
+import type { TimelineStop } from "../../components/StopsTimeline";
 import { useLocation } from "../../hooks/useLocation";
+import useRouteTracking from "../../hooks/useRouteTracking";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
 import {
   addSentryBreadcrumb,
   captureSentryException,
 } from "../../monitoring/sentry";
-import socketService from "../../sockets/socketService";
-import authStore from "../../store/auth";
 
-type Coord = {
-  latitude: number;
-  longitude: number;
-};
-
+type Coord = { latitude: number; longitude: number };
 type OrderedStop = {
   id?: string;
   name?: string;
   latitude: number;
   longitude: number;
   sequenceOrder?: number;
+  status?: "passed" | "current" | "upcoming" | "next";
   isPassed?: boolean;
+  leftSubLabel?: string;
+  rightPrimaryLabel?: string;
+  rightSecondaryLabel?: string;
+  arrivalClockTimeText?: string;
+  departedClockTimeText?: string;
   distanceFromCurrentText?: string;
   distanceFromCurrentMeters?: number;
   etaFromCurrentText?: string;
   etaFromCurrentSeconds?: number;
   segmentDistanceText?: string;
   segmentEtaText?: string;
+  segmentEtaSeconds?: number;
 };
-
 type StopStatus = "passed" | "next" | "upcoming";
-
-type StopWithStatus = OrderedStop & {
-  status: StopStatus;
-};
+type StopWithStatus = OrderedStop & { status: StopStatus };
 
 const TRIP_STATUS_LABELS: Record<string, string> = {
   PENDING: "Start soon",
@@ -75,24 +77,27 @@ const toStopCoord = (stop: DriverStop): OrderedStop | null => {
       : typeof stop.longitude === "number"
         ? stop.longitude
         : null;
-
-  if (latitude == null || longitude == null) {
-    return null;
-  }
-
+  if (latitude == null || longitude == null) return null;
   return {
     id: stop.id,
     name: stop.name,
     latitude,
     longitude,
     sequenceOrder: stop.sequenceOrder,
+    status: stop.status,
     isPassed: stop.isPassed,
+    leftSubLabel: stop.leftSubLabel,
+    rightPrimaryLabel: stop.rightPrimaryLabel,
+    rightSecondaryLabel: stop.rightSecondaryLabel,
+    arrivalClockTimeText: stop.arrivalClockTimeText,
+    departedClockTimeText: stop.departedClockTimeText,
     distanceFromCurrentText: stop.distanceFromCurrentText,
     distanceFromCurrentMeters: stop.distanceFromCurrentMeters,
     etaFromCurrentText: stop.etaFromCurrentText,
     etaFromCurrentSeconds: stop.etaFromCurrentSeconds,
     segmentDistanceText: stop.segmentDistanceText,
     segmentEtaText: stop.segmentEtaText,
+    segmentEtaSeconds: stop.segmentEtaSeconds,
   };
 };
 
@@ -100,122 +105,79 @@ const sameCoord = (a: Coord, b: Coord) =>
   Math.abs(a.latitude - b.latitude) < 1e-6 &&
   Math.abs(a.longitude - b.longitude) < 1e-6;
 
-const isValidCoord = (value?: Partial<Coord> | null): value is Coord => {
-  if (!value) {
-    return false;
-  }
+const isValidCoord = (value?: Partial<Coord> | null): value is Coord =>
+  !!value &&
+  typeof value.latitude === "number" &&
+  Number.isFinite(value.latitude) &&
+  typeof value.longitude === "number" &&
+  Number.isFinite(value.longitude);
 
-  return (
-    typeof value.latitude === "number" &&
-    Number.isFinite(value.latitude) &&
-    typeof value.longitude === "number" &&
-    Number.isFinite(value.longitude)
-  );
-};
-
-const buildFallbackPath = (
-  start: Coord | null,
-  orderedStops: OrderedStop[],
-  end: Coord | null,
-): Coord[] => {
+const buildFallbackPath = (start: Coord | null, orderedStops: OrderedStop[], end: Coord | null): Coord[] => {
   const points: Coord[] = [];
-
-  if (start) {
-    points.push(start);
-  }
-
-  orderedStops.forEach((stop) => {
-    points.push({ latitude: stop.latitude, longitude: stop.longitude });
-  });
-
-  if (end) {
-    points.push(end);
-  }
-
+  if (start) points.push(start);
+  orderedStops.forEach((stop) => points.push({ latitude: stop.latitude, longitude: stop.longitude }));
+  if (end) points.push(end);
   const deduped: Coord[] = [];
   points.forEach((point) => {
     const previous = deduped[deduped.length - 1];
-    if (!previous || !sameCoord(previous, point)) {
-      deduped.push(point);
-    }
+    if (!previous || !sameCoord(previous, point)) deduped.push(point);
   });
-
   return deduped;
 };
 
-const normalizeTripStatus = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value.trim().toUpperCase();
-  return normalized.length > 0 ? normalized : null;
-};
-
-const getTripStatusLabel = (status: unknown): string => {
-  const normalized = normalizeTripStatus(status);
-  if (!normalized) {
-    return "Ready to start";
-  }
-
-  return TRIP_STATUS_LABELS[normalized] ?? normalized;
-};
-
 const formatEtaFromSeconds = (seconds?: number): string | null => {
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
-    return null;
-  }
-
-  if (seconds < 60) {
-    return "<1 min";
-  }
-
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 60) return "<1 min";
   return `${Math.round(seconds / 60)} min`;
 };
 
 const formatDistanceFromMeters = (meters?: number): string | null => {
-  if (typeof meters !== "number" || !Number.isFinite(meters) || meters < 0) {
-    return null;
-  }
-
-  if (meters >= 1000) {
-    return `${(meters / 1000).toFixed(1)} km`;
-  }
-
+  if (typeof meters !== "number" || !Number.isFinite(meters) || meters < 0) return null;
+  if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
   return `${Math.round(meters)} m`;
 };
 
+const formatClockTimeFromOffset = (secondsOffset?: number, baseMs = Date.now()): string | null => {
+  if (typeof secondsOffset !== "number" || !Number.isFinite(secondsOffset)) return null;
+  const target = new Date(baseMs + secondsOffset * 1000);
+  return target.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+};
+
 const getFreshnessLabel = (lastUpdated?: string | null): string => {
-  if (!lastUpdated) {
-    return "No recent update";
-  }
-
+  if (!lastUpdated) return "No recent update";
   const parsed = new Date(lastUpdated).getTime();
-  if (!Number.isFinite(parsed)) {
-    return "No recent update";
-  }
-
+  if (!Number.isFinite(parsed)) return "No recent update";
   const elapsedSeconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
-  if (elapsedSeconds < 60) {
-    return `Updated ${elapsedSeconds}s ago`;
-  }
-
+  if (elapsedSeconds < 60) return `Updated ${elapsedSeconds}s ago`;
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   return `Updated ${elapsedMinutes}m ago`;
+};
+
+const getTripStatusLabel = (status: unknown): string => {
+  if (typeof status !== "string") return "Ready to start";
+  const normalized = status.trim().toUpperCase();
+  return TRIP_STATUS_LABELS[normalized] ?? normalized;
 };
 
 export default function UserTrackingScreen() {
   useSentryScreen("user/tracking");
 
-  const { ensureForegroundAccess, getCurrentPositionSafe } = useLocation();
+  useEffect(() => {
+    if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+  }, []);
 
+  const { ensureForegroundAccess, getCurrentPositionSafe } = useLocation();
   const params = useLocalSearchParams<{
     busId: string | string[];
+    routeId?: string | string[];
     plate?: string;
     route?: string;
   }>();
 
   const busId = Array.isArray(params.busId) ? params.busId[0] : params.busId;
+  const routeIdParam = Array.isArray(params.routeId) ? params.routeId[0] : params.routeId;
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -223,280 +185,141 @@ export default function UserTrackingScreen() {
   const [path, setPath] = useState<Coord[]>([]);
   const [routeEncodedPolyline, setRouteEncodedPolyline] = useState("");
   const [currentLocation, setCurrentLocation] = useState<Coord | null>(null);
-  const [connection, setConnection] = useState<"live" | "offline">(
-    socketService.isConnected() ? "live" : "offline",
-  );
   const [submittingSubscription, setSubmittingSubscription] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
+  const [sheetPosition, setSheetPosition] = useState<BottomSheetState>("half");
+  const bottomSheetRef = useRef<{ snapToPosition: (state: BottomSheetState) => void }>(null);
+  const previousCurrentStopIdRef = useRef<string | null>(null);
+  const lastAppliedRefreshNonceRef = useRef(0);
 
   const orderedStops = useMemo<OrderedStop[]>(() => {
     return (live?.stops ?? [])
-      .map((stop) => toStopCoord(stop))
+      .map(toStopCoord)
       .filter((stop): stop is OrderedStop => Boolean(stop))
-      .sort((a, b) => {
-        const aOrder = a.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
-        const bOrder = b.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
-        return aOrder - bOrder;
-      });
+      .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
   }, [live?.stops]);
 
-  useEffect(() => {
+  const selectedRouteId = live?.routeId ?? routeIdParam ?? null;
+  const tracking = useRouteTracking(selectedRouteId);
+
+  const loadLiveSnapshot = useCallback(async (showLoader: boolean) => {
     if (!busId) {
       setLoading(false);
       setError("Bus id is missing");
-      return;
+      return false;
     }
 
-    const load = async () => {
+    if (showLoader) {
       setLoading(true);
-      setError(null);
+    }
 
-      try {
-        const [liveData, subscriptions] = await Promise.all([
-          getUserBusLive(String(busId)),
-          getUserSubscriptions(),
-        ]);
+    setError(null);
+    try {
+      const [liveData, subscriptions] = await Promise.all([
+        getUserBusLive(String(busId)),
+        getUserSubscriptions(),
+      ]);
 
-        setLive(liveData);
-        setIsSubscribed(
-          subscriptions.some(
-            (subscription) => String(subscription.busId) === String(busId),
-          ),
-        );
+      setLive(liveData);
+      setIsSubscribed(subscriptions.some((subscription) => String(subscription.busId) === String(busId)));
 
-        const liveCoord =
-          liveData.currentLat != null && liveData.currentLng != null
-            ? {
-                latitude: liveData.currentLat,
-                longitude: liveData.currentLng,
-              }
-            : null;
+      const liveCoord = liveData.currentLat != null && liveData.currentLng != null
+        ? { latitude: liveData.currentLat, longitude: liveData.currentLng }
+        : null;
 
-        if (isValidCoord(liveCoord)) {
-          setCurrentLocation(liveCoord);
-          console.log("[UserTracking][location][live]", {
-            busId,
-            latitude: liveCoord.latitude,
-            longitude: liveCoord.longitude,
+      if (isValidCoord(liveCoord)) {
+        setCurrentLocation(liveCoord);
+      } else {
+        setCurrentLocation(null);
+      }
+
+      const sortedStops = (liveData.stops ?? [])
+        .map(toStopCoord)
+        .filter((stop): stop is OrderedStop => Boolean(stop))
+        .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
+
+      if (liveData.encodedPolyline) {
+        setRouteEncodedPolyline(liveData.encodedPolyline);
+        try {
+          const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
+          setPath(decoded.map(([latitude, longitude]) => ({ latitude, longitude })));
+        } catch (polylineErr) {
+          console.warn("[UserTracking][decodePolyline]", { busId, error: polylineErr });
+          captureSentryException(polylineErr, {
+            tags: { area: "user_tracking", operation: "decode_polyline" },
+            extra: { busId },
+            level: "warning",
           });
-        } else {
-          setCurrentLocation(null);
-        }
-
-        const sortedStops = (liveData.stops ?? [])
-          .map((stop) => toStopCoord(stop))
-          .filter((stop): stop is OrderedStop => Boolean(stop))
-          .sort((a, b) => {
-            const aOrder = a.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
-            const bOrder = b.sequenceOrder ?? Number.MAX_SAFE_INTEGER;
-            return aOrder - bOrder;
-          });
-
-        if (liveData.encodedPolyline) {
-          setRouteEncodedPolyline(liveData.encodedPolyline);
-          try {
-            const decoded = polyline.decode(liveData.encodedPolyline) as [
-              number,
-              number,
-            ][];
-            setPath(
-              decoded.map(([latitude, longitude]) => ({ latitude, longitude })),
-            );
-          } catch (polylineErr) {
-            console.warn("[UserTracking][decodePolyline]", {
-              busId,
-              error: polylineErr,
-            });
-            captureSentryException(polylineErr, {
-              tags: {
-                area: "user_tracking",
-                operation: "decode_polyline",
-              },
-              extra: {
-                busId,
-              },
-              level: "warning",
-            });
-            setRouteEncodedPolyline("");
-
-            const start =
-              liveData.routeStartLat != null && liveData.routeStartLng != null
-                ? {
-                    latitude: liveData.routeStartLat,
-                    longitude: liveData.routeStartLng,
-                  }
-                : null;
-
-            const end =
-              liveData.routeEndLat != null && liveData.routeEndLng != null
-                ? {
-                    latitude: liveData.routeEndLat,
-                    longitude: liveData.routeEndLng,
-                  }
-                : null;
-
-            setPath(buildFallbackPath(start, sortedStops, end));
-          }
-        } else {
           setRouteEncodedPolyline("");
 
-          const start =
-            liveData.routeStartLat != null && liveData.routeStartLng != null
-              ? {
-                  latitude: liveData.routeStartLat,
-                  longitude: liveData.routeStartLng,
-                }
-              : null;
-
-          const end =
-            liveData.routeEndLat != null && liveData.routeEndLng != null
-              ? {
-                  latitude: liveData.routeEndLat,
-                  longitude: liveData.routeEndLng,
-                }
-              : null;
+          const start = liveData.routeStartLat != null && liveData.routeStartLng != null
+            ? { latitude: liveData.routeStartLat, longitude: liveData.routeStartLng }
+            : null;
+          const end = liveData.routeEndLat != null && liveData.routeEndLng != null
+            ? { latitude: liveData.routeEndLat, longitude: liveData.routeEndLng }
+            : null;
 
           setPath(buildFallbackPath(start, sortedStops, end));
         }
-      } catch (err: any) {
-        console.error("[UserTracking][load]", {
-          busId,
-          error: err,
-        });
-        captureSentryException(err, {
-          tags: {
-            area: "user_tracking",
-            operation: "load",
-          },
-          extra: {
-            busId,
-          },
-        });
-        setError(
-          err?.response?.data?.message ??
-            err?.message ??
-            "Failed to load live bus",
-        );
-      } finally {
+      } else {
+        setRouteEncodedPolyline("");
+        const start = liveData.routeStartLat != null && liveData.routeStartLng != null
+          ? { latitude: liveData.routeStartLat, longitude: liveData.routeStartLng }
+          : null;
+        const end = liveData.routeEndLat != null && liveData.routeEndLng != null
+          ? { latitude: liveData.routeEndLat, longitude: liveData.routeEndLng }
+          : null;
+        setPath(buildFallbackPath(start, sortedStops, end));
+      }
+
+      return true;
+    } catch (err: any) {
+      console.error("[UserTracking][load]", { busId, error: err });
+      captureSentryException(err, {
+        tags: { area: "user_tracking", operation: "load" },
+        extra: { busId },
+      });
+      setError(err?.response?.data?.message ?? err?.message ?? "Failed to load live bus");
+      return false;
+    } finally {
+      if (showLoader) {
         setLoading(false);
       }
-    };
-
-    void load();
+    }
   }, [busId]);
 
   useEffect(() => {
-    if (!busId) {
+    void loadLiveSnapshot(true);
+  }, [loadLiveSnapshot]);
+
+  useEffect(() => {
+    if (tracking.refreshSnapshotNonce <= lastAppliedRefreshNonceRef.current) {
       return;
     }
 
-    socketService.connect(API_BASE_URL, authStore.token ?? undefined);
+    lastAppliedRefreshNonceRef.current = tracking.refreshSnapshotNonce;
+    void loadLiveSnapshot(false);
+  }, [loadLiveSnapshot, tracking.refreshSnapshotNonce]);
 
-    const onConnect = () => {
-      setConnection("live");
-      socketService.joinBusRoom(String(busId));
-    };
-
-    const onDisconnect = () => {
-      setConnection("offline");
-    };
-
-    const onBusLocationUpdate = (payload: unknown) => {
-      const event = payload as {
-        busId?: string | number;
-        bus?: { id?: string | number; _id?: string | number };
-        trip?: { status?: string };
-        tripStatus?: string;
-        nextStop?: string;
-        nextStopEta?: string;
-        estimatedArrival?: string;
-        etaToDestinationText?: string;
-        timestamp?: string;
-        location?: {
-          latitude?: number;
-          longitude?: number;
-          lat?: number;
-          lng?: number;
-        };
-        latitude?: number;
-        longitude?: number;
-        lat?: number;
-        lng?: number;
-      };
-
-      const eventBusId =
-        event.busId ?? event.bus?.id ?? event.bus?._id ?? undefined;
-
-      if (eventBusId != null && String(eventBusId) !== String(busId)) {
-        return;
-      }
-
-      const latitude =
-        event.latitude ??
-        event.lat ??
-        event.location?.latitude ??
-        event.location?.lat;
-
-      const longitude =
-        event.longitude ??
-        event.lng ??
-        event.location?.longitude ??
-        event.location?.lng;
-
-      const incomingCoord = { latitude, longitude };
-
-      if (isValidCoord(incomingCoord)) {
-        setCurrentLocation(incomingCoord);
-      }
-
-      setLive((previous) => {
-        if (!previous) {
-          return previous;
-        }
-
-        return {
-          ...previous,
-          currentLat:
-            typeof latitude === "number" ? latitude : previous.currentLat,
-          currentLng:
-            typeof longitude === "number" ? longitude : previous.currentLng,
-          tripStatus:
-            normalizeTripStatus(event.trip?.status ?? event.tripStatus) ??
-            previous.tripStatus,
-          nextStop: event.nextStop ?? previous.nextStop,
-          estimatedArrival:
-            event.nextStopEta ??
-            event.estimatedArrival ??
-            previous.estimatedArrival,
-          etaToDestinationText:
-            event.etaToDestinationText ?? previous.etaToDestinationText,
-          lastUpdated: event.timestamp ?? previous.lastUpdated,
-        };
+  useEffect(() => {
+    if (tracking.busLocation) {
+      setCurrentLocation({
+        latitude: tracking.busLocation.lat,
+        longitude: tracking.busLocation.lng,
       });
-    };
-
-    socketService.on("connect", onConnect);
-    socketService.on("disconnect", onDisconnect);
-    socketService.on("busLocationUpdate", onBusLocationUpdate);
-
-    if (socketService.isConnected()) {
-      onConnect();
-    } else {
-      setConnection("offline");
     }
+  }, [tracking.busLocation]);
 
-    return () => {
-      socketService.off("connect", onConnect);
-      socketService.off("disconnect", onDisconnect);
-      socketService.off("busLocationUpdate", onBusLocationUpdate);
-      socketService.leaveBusRoom(String(busId));
-    };
-  }, [busId]);
+  useEffect(() => {
+    const previous = previousCurrentStopIdRef.current;
+    if (tracking.currentStopId && previous && tracking.currentStopId !== previous) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    }
+    previousCurrentStopIdRef.current = tracking.currentStopId;
+  }, [tracking.currentStopId]);
 
   const subscribeForAlerts = async () => {
-    if (!busId || submittingSubscription || isSubscribed) {
-      return;
-    }
+    if (!busId || submittingSubscription || isSubscribed) return;
 
     setSubmittingSubscription(true);
     try {
@@ -504,43 +327,21 @@ export default function UserTrackingScreen() {
         category: "user_tracking",
         message: "Subscribe for alerts requested",
         level: "info",
-        data: {
-          busId,
-        },
+        data: { busId },
       });
 
-      const readiness = await ensureForegroundAccess(
-        "user_tracking_subscribe_alerts",
-        {
-          showAlerts: true,
-        },
-      );
-
-      console.log("[UserTracking][location][readiness]", {
-        ok: readiness.ok,
-        reason: readiness.reason,
-        servicesEnabled: readiness.servicesEnabled ?? null,
-        permissionGranted: readiness.permission?.granted ?? null,
+      const readiness = await ensureForegroundAccess("user_tracking_subscribe_alerts", {
+        showAlerts: true,
       });
 
-      if (!readiness.ok) {
-        return;
-      }
+      if (!readiness.ok) return;
 
       let userLatitude: number | undefined;
       let userLongitude: number | undefined;
 
       if (readiness.permission?.granted) {
-        const current = await getCurrentPositionSafe(
-          "user_tracking_subscribe_alerts",
-          {},
-        );
+        const current = await getCurrentPositionSafe("user_tracking_subscribe_alerts", {});
         if (current) {
-          console.log("[UserTracking][location][subscription]", {
-            busId,
-            latitude: current.coords.latitude,
-            longitude: current.coords.longitude,
-          });
           userLatitude = current.coords.latitude;
           userLongitude = current.coords.longitude;
         }
@@ -557,135 +358,225 @@ export default function UserTrackingScreen() {
 
       setIsSubscribed(true);
     } catch (subscriptionErr) {
-      console.error("[UserTracking][subscribeForAlerts]", {
-        busId,
-        error: subscriptionErr,
-      });
+      console.error("[UserTracking][subscribeForAlerts]", { busId, error: subscriptionErr });
       captureSentryException(subscriptionErr, {
-        tags: {
-          area: "user_tracking",
-          operation: "subscribe_for_alerts",
-        },
-        extra: {
-          busId,
-        },
+        tags: { area: "user_tracking", operation: "subscribe_for_alerts" },
+        extra: { busId },
         level: "warning",
       });
-      // Keep tracking view usable if subscription request fails.
     } finally {
       setSubmittingSubscription(false);
     }
   };
 
   const eta =
+    tracking.routeEtaSummary?.etaToDestinationText ??
+    formatEtaFromSeconds(tracking.routeEtaSummary?.etaToDestinationSeconds) ??
     live?.etaToDestinationText ??
     live?.estimatedArrival ??
     formatEtaFromSeconds(live?.etaToDestinationSeconds) ??
     formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
     "-";
 
-  const tripStatusLabel = getTripStatusLabel(
-    live?.trip?.status ?? live?.tripStatus,
-  );
-  const connectionLabel = connection === "live" ? "Live" : "Offline";
-  const freshnessLabel = getFreshnessLabel(live?.lastUpdated);
-  const routeStartLabel = live?.routeStartName ?? orderedStops[0]?.name ?? "-";
-  const routeEndLabel =
-    live?.routeEndName ?? orderedStops[orderedStops.length - 1]?.name ?? "-";
+  const tripStatusLabel = getTripStatusLabel(live?.trip?.status ?? live?.tripStatus);
+  const connectionLabel = tracking.connectionStatus === "connected" ? "Live" : tracking.connectionStatus === "reconnecting" ? "Reconnecting" : "Offline";
+  const freshnessBase = tracking.lastUpdatedTimestamp != null
+    ? getFreshnessLabel(new Date(tracking.lastUpdatedTimestamp).toISOString())
+    : getFreshnessLabel(live?.lastUpdated);
+  const freshnessLabel = tracking.isStale ? `${freshnessBase} • Stale` : freshnessBase;
 
-  const nextStopName =
-    live?.nextStop ??
-    orderedStops.find((stop) => typeof stop.etaFromCurrentSeconds === "number")
-      ?.name ??
-    orderedStops[0]?.name ??
-    "-";
-
-  const nextStopEta =
-    orderedStops.find((stop) => stop.name === nextStopName)
-      ?.etaFromCurrentText ??
-    formatEtaFromSeconds(
-      orderedStops.find((stop) => stop.name === nextStopName)
-        ?.etaFromCurrentSeconds,
-    ) ??
-    live?.estimatedArrival ??
-    "-";
-
-  const stopsWithStatus = useMemo<StopWithStatus[]>(() => {
-    if (!orderedStops.length) {
-      return [];
+  const mergedTimelineStops = useMemo<OrderedStop[]>(() => {
+    if (!tracking.timelineStops.length) {
+      return orderedStops;
     }
 
-    const hasPassState = orderedStops.some(
-      (stop) => typeof stop.isPassed === "boolean",
+    const realtimeById = new Map(
+      tracking.timelineStops
+        .filter((stop) => typeof stop.id === "string" && stop.id.trim().length > 0)
+        .map((stop) => [String(stop.id), stop]),
     );
 
-    if (hasPassState) {
-      const firstNotPassed = orderedStops.findIndex(
-        (stop) => stop.isPassed !== true,
-      );
-      const nextIndex = firstNotPassed < 0 ? 0 : firstNotPassed;
-
-      return orderedStops.map((stop, index) => ({
-        ...stop,
-        status:
-          stop.isPassed === true
-            ? "passed"
-            : index === nextIndex
-              ? "next"
-              : "upcoming",
-      }));
-    }
-
-    const normalizedNextStop = live?.nextStop?.trim().toLowerCase();
-    const nextByName = normalizedNextStop
-      ? orderedStops.findIndex(
-          (stop) => stop.name?.trim().toLowerCase() === normalizedNextStop,
-        )
-      : -1;
-
-    if (nextByName >= 0) {
-      return orderedStops.map((stop, index) => ({
-        ...stop,
-        status:
-          index < nextByName
-            ? "passed"
-            : index === nextByName
-              ? "next"
-              : "upcoming",
-      }));
-    }
-
-    if (!currentLocation) {
-      return orderedStops.map((stop, index) => ({
-        ...stop,
-        status: index === 0 ? "next" : "upcoming",
-      }));
-    }
-
-    let nearestIndex = 0;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-
-    orderedStops.forEach((stop, index) => {
-      const dLat = stop.latitude - currentLocation.latitude;
-      const dLng = stop.longitude - currentLocation.longitude;
-      const distanceScore = dLat * dLat + dLng * dLng;
-
-      if (distanceScore < nearestDistance) {
-        nearestDistance = distanceScore;
-        nearestIndex = index;
+    return orderedStops.map((stop) => {
+      const realtime = stop.id ? realtimeById.get(stop.id) : undefined;
+      if (!realtime) {
+        return stop;
       }
-    });
 
-    return orderedStops.map((stop, index) => ({
-      ...stop,
-      status:
-        index < nearestIndex
-          ? "passed"
-          : index === nearestIndex
-            ? "next"
+      return {
+        ...stop,
+        status: realtime.status ?? stop.status,
+        isPassed: typeof realtime.isPassed === "boolean" ? realtime.isPassed : stop.isPassed,
+        etaFromCurrentSeconds: realtime.etaFromCurrentSeconds ?? stop.etaFromCurrentSeconds,
+        etaFromCurrentText: realtime.etaFromCurrentText ?? stop.etaFromCurrentText,
+        segmentEtaSeconds: realtime.segmentEtaSeconds ?? stop.segmentEtaSeconds,
+        segmentEtaText: realtime.segmentEtaText ?? stop.segmentEtaText,
+        arrivalClockTimeText: realtime.arrivalClockTimeText ?? stop.arrivalClockTimeText,
+        departedClockTimeText: realtime.departedClockTimeText ?? stop.departedClockTimeText,
+        leftSubLabel: realtime.leftSubLabel ?? stop.leftSubLabel,
+        rightPrimaryLabel: realtime.rightPrimaryLabel ?? stop.rightPrimaryLabel,
+        rightSecondaryLabel: realtime.rightSecondaryLabel ?? stop.rightSecondaryLabel,
+      };
+    });
+  }, [orderedStops, tracking.timelineStops]);
+
+  const routeStartLabel = live?.routeStartName ?? mergedTimelineStops[0]?.name ?? "-";
+  const routeEndLabel = live?.routeEndName ?? mergedTimelineStops[mergedTimelineStops.length - 1]?.name ?? "-";
+
+  const destinationDistance = live?.distanceToDestinationText
+    ?? formatDistanceFromMeters(live?.distanceToDestinationMeters)
+    ?? live?.totalDistanceText
+    ?? "-";
+
+  const trackingStatusLabel = String(
+    live?.trackingStatus
+    ?? live?.fleetStatus
+    ?? live?.status
+    ?? tracking.connectionStatus,
+  )
+    .replace(/_/g, " ")
+    .toUpperCase();
+
+  const normalizedTripStatus = String(live?.trip?.status ?? live?.tripStatus ?? "PENDING").trim().toUpperCase();
+  const tripStatusBadge = tracking.connectionStatus !== "connected"
+    ? "OFFLINE"
+    : normalizedTripStatus.includes("STOPPED")
+      ? "STOPPED"
+      : normalizedTripStatus.includes("RUNNING") || normalizedTripStatus.includes("STARTED")
+        ? "RUNNING"
+        : normalizedTripStatus.includes("PENDING")
+          ? "PENDING"
+          : normalizedTripStatus.includes("COMPLETED")
+            ? "COMPLETED"
+            : normalizedTripStatus.includes("CANCEL")
+              ? "CANCELLED"
+              : normalizedTripStatus;
+
+  const stopsWithStatus = useMemo<StopWithStatus[]>(() => {
+    if (!mergedTimelineStops.length) return [];
+
+    const hasBackendStatus = mergedTimelineStops.some((stop) => stop.status != null);
+    if (hasBackendStatus) {
+      return mergedTimelineStops.map((stop) => ({
+        ...stop,
+        status: stop.status === "current"
+          ? "next"
+          : stop.status === "passed"
+            ? "passed"
             : "upcoming",
+      }));
+    }
+
+    const hasPassState = mergedTimelineStops.some((stop) => typeof stop.isPassed === "boolean");
+    if (hasPassState) {
+      const firstNotPassed = mergedTimelineStops.findIndex((stop) => stop.isPassed !== true);
+      const currentIndex = firstNotPassed < 0 ? mergedTimelineStops.length - 1 : firstNotPassed;
+      return mergedTimelineStops.map((stop, index) => ({
+        ...stop,
+        status: stop.isPassed === true ? "passed" : index === currentIndex ? "next" : "upcoming",
+      }));
+    }
+
+    const currentStopById = tracking.currentStopId ? mergedTimelineStops.findIndex((stop) => stop.id === tracking.currentStopId) : -1;
+    const nextStopById = tracking.nextStopId ? mergedTimelineStops.findIndex((stop) => stop.id === tracking.nextStopId) : -1;
+
+    if (currentStopById >= 0) {
+      return mergedTimelineStops.map((stop, index) => ({
+        ...stop,
+        status: index < currentStopById ? "passed" : index === currentStopById ? "next" : "upcoming",
+      }));
+    }
+
+    if (nextStopById >= 0) {
+      return mergedTimelineStops.map((stop, index) => ({
+        ...stop,
+        status: index < nextStopById ? "passed" : index === nextStopById ? "next" : "upcoming",
+      }));
+    }
+
+    return mergedTimelineStops.map((stop, index) => ({
+      ...stop,
+      status: index === 0 ? "next" : "upcoming",
     }));
-  }, [currentLocation, live?.nextStop, orderedStops]);
+  }, [mergedTimelineStops, tracking.currentStopId, tracking.nextStopId]);
+
+  const timelineStopsForSheet = useMemo<TimelineStop[]>(() => {
+    return stopsWithStatus.map((stop, index) => {
+      const uiStatus: "passed" | "current" | "upcoming" =
+        stop.status === "next" ? "current" : stop.status;
+      const etaSecondsFromSocket = stop.id ? tracking.etaMap[stop.id] : undefined;
+      const etaSeconds = typeof etaSecondsFromSocket === "number"
+        ? etaSecondsFromSocket
+        : stop.etaFromCurrentSeconds;
+      const labelFromBackend = stop.leftSubLabel ?? stop.rightPrimaryLabel;
+      const arrivalClock = stop.arrivalClockTimeText;
+      const departedClock = stop.departedClockTimeText;
+
+      if (labelFromBackend) {
+        return {
+          id: stop.id,
+          name: stop.name || `Stop ${index + 1}`,
+          status: uiStatus,
+          sequence: stop.sequenceOrder ?? index + 1,
+          leftSubLabel: stop.leftSubLabel,
+          rightPrimaryLabel: stop.rightPrimaryLabel,
+          rightSecondaryLabel:
+            stop.rightSecondaryLabel?.toUpperCase() === "CURRENT"
+              ? "CURRENT"
+              : undefined,
+        };
+      }
+
+      if (uiStatus === "passed") {
+        return {
+          id: stop.id,
+          name: stop.name || `Stop ${index + 1}`,
+          status: uiStatus,
+          sequence: stop.sequenceOrder ?? index + 1,
+          leftSubLabel: departedClock ? `Departed ${departedClock}` : "Passed",
+          rightPrimaryLabel: "Passed",
+        };
+      }
+
+      if (uiStatus === "current") {
+        return {
+          id: stop.id,
+          name: stop.name || `Stop ${index + 1}`,
+          status: uiStatus,
+          sequence: stop.sequenceOrder ?? index + 1,
+          leftSubLabel: "Arriving Now",
+          rightPrimaryLabel: arrivalClock ?? "Now",
+          rightSecondaryLabel: "CURRENT",
+        };
+      }
+
+      return {
+        id: stop.id,
+        name: stop.name || `Stop ${index + 1}`,
+        status: uiStatus,
+        sequence: stop.sequenceOrder ?? index + 1,
+        leftSubLabel: stop.etaFromCurrentText
+          ?? (typeof etaSeconds === "number" ? `In ${Math.max(1, Math.round(etaSeconds / 60))} mins` : undefined)
+          ?? stop.distanceFromCurrentText
+          ?? "Upcoming",
+        rightPrimaryLabel: arrivalClock
+          ?? formatClockTimeFromOffset(etaSeconds)
+          ?? formatEtaFromSeconds(etaSeconds)
+          ?? "-",
+      };
+    });
+  }, [stopsWithStatus, tracking.etaMap]);
+
+  const nextTimelineStop = timelineStopsForSheet.find((stop) => stop.status === "current")
+    ?? timelineStopsForSheet.find((stop) => stop.status === "upcoming")
+    ?? timelineStopsForSheet[0];
+
+  const nextStopName = nextTimelineStop?.name ?? live?.nextStop ?? mergedTimelineStops[0]?.name ?? "-";
+  const nextStopEta = nextTimelineStop?.leftSubLabel
+    ?? mergedTimelineStops.find((stop) => stop.id === nextTimelineStop?.id)?.etaFromCurrentText
+    ?? live?.estimatedArrival
+    ?? "-";
+  const nextStopEtaSecondsFromSocket = nextTimelineStop?.id ? tracking.etaMap[nextTimelineStop.id] : undefined;
+  const busApproachingNextStop = typeof nextStopEtaSecondsFromSocket === "number" && nextStopEtaSecondsFromSocket <= 90;
 
   if (loading) {
     return (
@@ -699,42 +590,15 @@ export default function UserTrackingScreen() {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-slate-50 px-8">
         <MaterialCommunityIcons name="bus-alert" size={56} color="#ef4444" />
-        <Text className="mt-4 text-center text-lg font-semibold text-red-600">
-          {error}
-        </Text>
+        <Text className="mt-4 text-center text-lg font-semibold text-red-600">{error}</Text>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-slate-100">
-      <View className="flex-row items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
-        <Pressable
-          onPress={() => router.back()}
-          className="h-10 w-10 items-center justify-center rounded-xl bg-slate-100"
-        >
-          <Ionicons name="arrow-back" size={20} color="#0f172a" />
-        </Pressable>
-
-        <Text
-          className="flex-1 px-2 text-center text-base font-extrabold text-slate-900"
-          numberOfLines={1}
-        >
-          Bus {live?.numberPlate || params.plate || "-"}
-        </Text>
-
-        <View
-          className={`rounded-full px-3 py-1 ${connection === "live" ? "bg-emerald-100" : "bg-slate-200"}`}
-        >
-          <Text
-            className={`text-xs font-bold ${connection === "live" ? "text-emerald-700" : "text-slate-600"}`}
-          >
-            {connectionLabel}
-          </Text>
-        </View>
-      </View>
-
-      <View className="h-[300px] w-full bg-slate-200">
+    <View className="relative flex-1 bg-slate-900">
+      {/* Full-screen map */}
+      <View className="absolute inset-0">
         <RouteMap
           coordinates={path ?? []}
           encodedPolyline={routeEncodedPolyline || undefined}
@@ -747,197 +611,52 @@ export default function UserTrackingScreen() {
             status: stop.status,
           }))}
         />
-        {path.length <= 1 &&
-        !currentLocation &&
-        stopsWithStatus.length === 0 ? (
-          <View className="absolute inset-0 items-center justify-center bg-slate-200/70">
-            <Text className="text-sm text-slate-600">
-              Live route unavailable. Map will update when location data
-              arrives.
-            </Text>
-          </View>
-        ) : null}
       </View>
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
-      >
-        <View className="rounded-2xl bg-white p-4">
-          <View className="flex-row items-center justify-between">
-            <View>
-              <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Trip Status
-              </Text>
-              <Text className="mt-1 text-lg font-extrabold text-slate-900">
-                {tripStatusLabel}
-              </Text>
-            </View>
-            <MaterialCommunityIcons
-              name="bus-clock"
-              size={28}
-              color="#1d4ed8"
-            />
-          </View>
-
-          <Text className="mt-2 text-xs text-slate-500">{freshnessLabel}</Text>
-
-          <View className="mt-4 flex-row items-center justify-between rounded-xl bg-slate-100 px-3 py-3">
-            <View>
-              <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                ETA to destination
-              </Text>
-              <Text className="mt-1 text-base font-bold text-slate-900">
-                {eta}
-              </Text>
-            </View>
-            <View>
-              <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Route
-              </Text>
-              <Text
-                className="mt-1 text-base font-bold text-slate-900"
-                numberOfLines={1}
-              >
-                {live?.routeName || params.route || "-"}
-              </Text>
-            </View>
-          </View>
-
-          <View className="mt-3 rounded-xl bg-slate-100 px-3 py-3">
-            <Text className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Route Points
-            </Text>
-            <Text className="mt-1 text-sm text-slate-700" numberOfLines={1}>
-              Start: {routeStartLabel}
-            </Text>
-            <Text className="mt-1 text-sm text-slate-700" numberOfLines={1}>
-              Destination: {routeEndLabel}
-            </Text>
-          </View>
-
-          <View className="mt-3 rounded-xl bg-blue-50 px-3 py-3">
-            <Text className="text-xs font-semibold uppercase tracking-wider text-blue-700">
-              Next Stop
-            </Text>
-            <Text className="mt-1 text-base font-bold text-slate-900">
-              {nextStopName}
-            </Text>
-            <Text className="mt-1 text-sm text-slate-600">
-              ETA: {nextStopEta}
-            </Text>
-          </View>
-
+      {/* Top overlay - floating header */}
+      <SafeAreaView className="absolute left-0 right-0 top-0 z-10 px-4 py-3">
+        <View className="flex-row items-center justify-between">
           <Pressable
-            className={`mt-4 flex-row items-center justify-center rounded-xl px-4 py-3 ${
-              isSubscribed ? "bg-emerald-100" : "bg-blue-700"
-            }`}
-            onPress={subscribeForAlerts}
-            disabled={submittingSubscription || isSubscribed}
+            onPress={() => router.back()}
+            className="h-10 w-10 items-center justify-center rounded-full bg-white shadow-lg"
           >
-            {submittingSubscription ? (
-              <ActivityIndicator size="small" color="#1d4ed8" />
-            ) : (
-              <>
-                <Ionicons
-                  name={
-                    isSubscribed ? "notifications" : "notifications-outline"
-                  }
-                  size={18}
-                  color={isSubscribed ? "#047857" : "white"}
-                />
-                <Text
-                  className={`ml-2 text-sm font-bold ${isSubscribed ? "text-emerald-700" : "text-white"}`}
-                >
-                  {isSubscribed ? "Subscribed" : "Subscribe for alerts"}
-                </Text>
-              </>
-            )}
+            <Ionicons name="arrow-back" size={20} color="#0f172a" />
           </Pressable>
-        </View>
 
-        <View className="mt-3 rounded-2xl bg-white p-4">
-          <Text className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
-            Current Progress
+          <Text className="flex-1 px-3 text-center text-[15px] font-semibold text-white drop-shadow-lg">
+            Bus {live?.numberPlate || params.plate || "-"}
           </Text>
 
-          {stopsWithStatus.length === 0 ? (
-            <Text className="text-sm text-slate-500">No stops available.</Text>
-          ) : (
-            <View>
-              {stopsWithStatus.map((stop, index) => (
-                <View
-                  key={stop.id ?? `${stop.name}-${index}`}
-                  className="mb-3 flex-row"
-                >
-                  <View className="mr-3 items-center" style={{ width: 18 }}>
-                    <View
-                      className={`h-3.5 w-3.5 rounded-full ${
-                        stop.status === "passed"
-                          ? "bg-emerald-500"
-                          : stop.status === "next"
-                            ? "bg-blue-600"
-                            : "bg-amber-400"
-                      }`}
-                    />
-                    {index < stopsWithStatus.length - 1 ? (
-                      <View className="mt-1 h-8 w-0.5 bg-slate-200" />
-                    ) : null}
-                  </View>
-
-                  <View className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
-                    <Text
-                      className="text-sm font-semibold text-slate-900"
-                      numberOfLines={1}
-                    >
-                      {(stop.sequenceOrder ?? index + 1) +
-                        ". " +
-                        (stop.name || "Stop")}
-                    </Text>
-                    <Text
-                      className={`mt-0.5 text-xs font-semibold ${
-                        stop.status === "passed"
-                          ? "text-emerald-600"
-                          : stop.status === "next"
-                            ? "text-blue-700"
-                            : "text-amber-700"
-                      }`}
-                    >
-                      {stop.status === "passed"
-                        ? "Passed"
-                        : stop.status === "next"
-                          ? "Next Stop"
-                          : "Upcoming"}
-                    </Text>
-                    <Text className="mt-1 text-xs text-slate-600">
-                      {`From bus: ${
-                        stop.distanceFromCurrentText ??
-                        formatDistanceFromMeters(
-                          stop.distanceFromCurrentMeters,
-                        ) ??
-                        "distance --"
-                      } • ${
-                        stop.etaFromCurrentText ??
-                        formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
-                        "ETA --"
-                      }`}
-                    </Text>
-                    {stop.segmentDistanceText || stop.segmentEtaText ? (
-                      <Text className="mt-0.5 text-[11px] text-slate-500">
-                        {`From previous: ${stop.segmentDistanceText ?? "-"}${
-                          stop.segmentDistanceText && stop.segmentEtaText
-                            ? " • "
-                            : ""
-                        }${stop.segmentEtaText ?? "-"}`}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-              ))}
-            </View>
-          )}
+          <View className={`rounded-full px-3 py-1.5 shadow-lg ${tracking.connectionStatus === "connected" ? "bg-emerald-500" : tracking.connectionStatus === "reconnecting" ? "bg-amber-500" : "bg-slate-600"}`}>
+            <Text className="text-xs font-semibold text-white">{connectionLabel}</Text>
+          </View>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+
+      {/* Draggable bottom sheet */}
+      <BottomSheet ref={bottomSheetRef} collapsedHeight={180} initialState="half" onStateChange={setSheetPosition}>
+        <BottomSheetContent
+          state={sheetPosition}
+          tripStatusBadge={tripStatusBadge}
+          tripStatusLabel={tripStatusLabel}
+          trackingStatusLabel={trackingStatusLabel}
+          nextStop={nextStopName}
+          nextStopEta={nextStopEta}
+          tripEtaToDestination={eta}
+          destinationDistance={destinationDistance}
+          routeName={live?.routeName || params.route || "-"}
+          routeStart={routeStartLabel}
+          routeEnd={routeEndLabel}
+          stops={timelineStopsForSheet}
+          currentStopId={tracking.currentStopId}
+          nextStopId={tracking.nextStopId}
+          busApproaching={busApproachingNextStop}
+          isSubscribed={isSubscribed}
+          onSubscribePress={subscribeForAlerts}
+          submittingSubscription={submittingSubscription}
+          freshnessLabel={freshnessLabel}
+        />
+      </BottomSheet>
+    </View>
   );
 }

@@ -219,7 +219,11 @@ logApiConfig();
 const isLocalhostApiUrl = (value: string): boolean => {
   try {
     const parsed = new URL(value);
-    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "0.0.0.0"
+    );
   } catch {
     return false;
   }
@@ -333,9 +337,9 @@ apiClient.interceptors.request.use((config) => {
     return Promise.reject(configError);
   }
 
-  if (!__DEV__ && isLocalhostApiUrl(API_BASE_URL)) {
+  if (Platform.OS !== "web" && isLocalhostApiUrl(API_BASE_URL)) {
     const localhostError = new Error(
-      "Invalid EXPO_PUBLIC_BACKEND_URL for release build: localhost is not reachable on device.",
+      "Invalid EXPO_PUBLIC_BACKEND_URL for mobile device: use your computer LAN IP (for example http://192.168.x.x:3000), not localhost/127.0.0.1/0.0.0.0.",
     );
     console.error("[API][config]", {
       message: localhostError.message,

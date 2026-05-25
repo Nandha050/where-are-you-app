@@ -1,626 +1,789 @@
-import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather, Ionicons } from "@expo/vector-icons";
+import polyline from "@mapbox/polyline";
 import { Redirect, router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  ImageBackground,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
+    AccessibilityInfo,
+    ActivityIndicator,
+    Animated,
+    Easing,
+    PanResponder,
+    Platform,
+    Pressable,
+    Text,
+    View,
+    useWindowDimensions,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { BusSearchResult, UserSubscription } from "../../api/types";
-import {
-  createUserSubscription,
-  deleteUserSubscription,
-  getUserBusLive,
-  getUserNotifications,
-  getUserSubscriptions,
-  searchUserBuses,
-} from "../../api/user";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { BusLiveStatus, DriverStop, UserSubscription } from "../../api/types";
+import { getUserBusLive, getUserNotifications, getUserSubscriptions } from "../../api/user";
+import { PremiumBottomSheet, type TimelineStop } from "../../components/PremiumBottomSheet";
+import RouteMap from "../../components/RouteMap";
 import { useAuth } from "../../hooks/useAuth";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
-import { addSentryBreadcrumb, captureSentryException } from "../../monitoring/sentry";
+import { captureSentryException } from "../../monitoring/sentry";
 
-interface SavedBusCard {
-  subscriptionId: string;
-  busId: string;
-  numberPlate: string;
-  routeName: string;
-  routeId?: string;
-  tripStatus?: string | null;
-  lastUpdated?: string | null;
-  nextStop?: string;
-  etaLabel?: string;
-}
+type Coord = { latitude: number; longitude: number };
+type StopStatus = "passed" | "next" | "upcoming";
 
-const FALLBACK_MAP_IMAGE =
-  "https://images.unsplash.com/photo-1577086664693-894d8405334a?auto=format&fit=crop&w=1400&q=80";
-
-const USER_TRIP_STATUS_LABELS: Record<string, string> = {
-  PENDING: "Start soon",
-  STARTED: "Trip started",
-  RUNNING: "Bus moving",
-  STOPPED: "Bus stopped",
-  COMPLETED: "Trip ended",
-  CANCELLED: "Trip cancelled",
+type SavedBusCard = {
+    subscriptionId: string;
+    busId: string;
+    numberPlate: string;
+    routeName: string;
+    routeId?: string;
+    nextStop?: string;
 };
 
-const getTripStatusLabel = (status: unknown): string => {
-  if (typeof status !== "string" || !status.trim()) {
-    return "No active trip";
-  }
-
-  const normalized = status.trim().toUpperCase();
-  return USER_TRIP_STATUS_LABELS[normalized] ?? normalized;
+const PALETTE = {
+    primaryBackground: "#F1F5F9",
+    secondaryBackground: "#E2E8F0",
+    darkAccent: "#1F2937",
+    mutedText: "#64748B",
+    warning: "#C2410C",
+    success: "#4D7C0F",
+    activeBlue: "#3B82F6",
 };
 
-const getFreshnessLabel = (timestamp?: string | null): string => {
-  if (!timestamp) {
-    return "No updates yet";
-  }
-
-  const parsed = new Date(timestamp).getTime();
-  if (!Number.isFinite(parsed)) {
-    return "No updates yet";
-  }
-
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
-
-  if (elapsedSeconds < 60) {
-    return `Updated ${elapsedSeconds}s ago`;
-  }
-
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-  return `Updated ${elapsedMinutes}m ago`;
+const isFiniteCoord = (point?: Partial<Coord> | null): point is Coord => {
+    if (!point) return false;
+    return (
+        typeof point.latitude === "number" &&
+        Number.isFinite(point.latitude) &&
+        typeof point.longitude === "number" &&
+        Number.isFinite(point.longitude)
+    );
 };
 
-const extractSavedBus = (
-  subscription: UserSubscription,
-): SavedBusCard | null => {
-  const busId = subscription.busId ?? subscription.bus?.id;
-  const subscriptionId = subscription.id;
+const toStopCoord = (
+    stop: DriverStop,
+):
+    | {
+        latitude: number;
+        longitude: number;
+        name?: string;
+        sequenceOrder?: number;
+        status?: StopStatus;
+    }
+    | null => {
+    const latitude =
+        typeof stop.lat === "number"
+            ? stop.lat
+            : typeof stop.latitude === "number"
+                ? stop.latitude
+                : null;
 
-  if (!subscriptionId) return null;
-  if (!busId) return null;
+    const longitude =
+        typeof stop.lng === "number"
+            ? stop.lng
+            : typeof stop.longitude === "number"
+                ? stop.longitude
+                : null;
 
-  return {
-    subscriptionId,
-    busId,
-    numberPlate: subscription.bus?.numberPlate ?? "BUS",
-    routeName: subscription.bus?.routeName ?? "Route",
-    routeId: subscription.bus?.routeId,
-    tripStatus: null,
-    lastUpdated: null,
-    nextStop: subscription.stop?.name,
-    etaLabel: subscription.notifyOnNearStop ? "Near Stop" : "Bus Start",
-  };
+    if (latitude == null || longitude == null) {
+        return null;
+    }
+
+    return {
+        latitude,
+        longitude,
+        name: stop.name,
+        sequenceOrder: stop.sequenceOrder,
+        status: stop.status === "passed" ? "passed" : stop.status === "current" ? "next" : "upcoming",
+    };
 };
+
+const formatEtaLabel = (eta?: string | null, etaSeconds?: number): string => {
+    if (typeof eta === "string" && eta.trim()) {
+        const normalized = eta.trim();
+        if (normalized.toLowerCase().includes("min")) {
+            return normalized;
+        }
+    }
+
+    if (typeof etaSeconds === "number" && Number.isFinite(etaSeconds) && etaSeconds > 0) {
+        const minutes = Math.max(1, Math.round(etaSeconds / 60));
+        return `${minutes} min`;
+    }
+
+    return "2 min";
+};
+
+const extractSavedBus = (subscription: UserSubscription): SavedBusCard | null => {
+    const busId = subscription.busId ?? subscription.bus?.id;
+    const subscriptionId = subscription.id;
+
+    if (!busId || !subscriptionId) {
+        return null;
+    }
+
+    return {
+        subscriptionId,
+        busId,
+        numberPlate: subscription.bus?.numberPlate ?? "BUS",
+        routeName: subscription.bus?.routeName ?? "Route",
+        routeId: subscription.bus?.routeId,
+        nextStop: subscription.stop?.name,
+    };
+};
+
+const GlassCard = ({ children, style }: { children: React.ReactNode; style?: any }) => (
+    <View
+        className="absolute left-4 right-4 flex-row items-center rounded-2xl border border-white/30 bg-slate-100/70 px-4 py-2.5 shadow"
+        style={style}
+    >
+        {children}
+    </View>
+);
 
 export default function UserHome() {
-  useSentryScreen("user/home");
+    useSentryScreen("user/home");
 
-  const { isAuthenticated, isHydrated } = useAuth();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<BusSearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [savedBuses, setSavedBuses] = useState<SavedBusCard[]>([]);
-  const [loadingSaved, setLoadingSaved] = useState(true);
-  const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  const [notificationCount, setNotificationCount] = useState(0);
+    const { isAuthenticated, isHydrated } = useAuth();
+    const insets = useSafeAreaInsets();
+    const { height: windowHeight } = useWindowDimensions();
 
-  const loadSavedAndNotifications = useCallback(async () => {
-    if (!isAuthenticated) {
-      return;
-    }
+    const [savedBuses, setSavedBuses] = useState<SavedBusCard[]>([]);
+    const [loadingSaved, setLoadingSaved] = useState(true);
+    const [notificationCount, setNotificationCount] = useState(0);
+    const [live, setLive] = useState<BusLiveStatus | null>(null);
+    const [loadingLive, setLoadingLive] = useState(true);
+    const [reduceMotion, setReduceMotion] = useState(false);
+    const [sheetVisible, setSheetVisible] = useState(false);
 
-    setLoadingSaved(true);
-    try {
-      const [subscriptions, notifications] = await Promise.all([
-        getUserSubscriptions(),
-        getUserNotifications(),
-      ]);
+    const pulse = useRef(new Animated.Value(0)).current;
+    const cardTranslateY = useRef(new Animated.Value(42)).current;
+    const cardOpacity = useRef(new Animated.Value(0)).current;
+    const sheetAnimY = useRef(new Animated.Value(windowHeight)).current;
+    const backdropOpacity = useRef(new Animated.Value(0)).current;
 
-      const mapped = subscriptions
-        .map(extractSavedBus)
-        .filter((item): item is SavedBusCard => Boolean(item));
+    useEffect(() => {
+        AccessibilityInfo.isReduceMotionEnabled()
+            .then(setReduceMotion)
+            .catch(() => setReduceMotion(false));
 
-      const enriched = await Promise.all(
-        mapped.map(async (item) => {
-          try {
-            const live = await getUserBusLive(item.busId);
-            return {
-              ...item,
-              tripStatus: live.trip?.status ?? live.tripStatus ?? null,
-              lastUpdated: live.lastUpdated ?? null,
-            };
-          } catch (liveErr) {
-            console.warn("[UserHome][getUserBusLive]", {
-              busId: item.busId,
-              error: liveErr,
+        const listener = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+        return () => {
+            listener.remove();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (reduceMotion) {
+            pulse.stopAnimation();
+            pulse.setValue(0);
+            return;
+        }
+
+        const pulseLoop = Animated.loop(
+            Animated.timing(pulse, {
+                toValue: 1,
+                duration: 2000,
+                easing: Easing.out(Easing.quad),
+                useNativeDriver: true,
+            }),
+        );
+
+        pulse.setValue(0);
+        pulseLoop.start();
+
+        return () => {
+            pulseLoop.stop();
+            pulse.setValue(0);
+        };
+    }, [pulse, reduceMotion]);
+
+    useEffect(() => {
+        if (reduceMotion) {
+            cardTranslateY.setValue(0);
+            cardOpacity.setValue(1);
+            return;
+        }
+
+        cardTranslateY.setValue(42);
+        cardOpacity.setValue(0);
+
+        Animated.parallel([
+            Animated.timing(cardTranslateY, {
+                toValue: 0,
+                duration: 400,
+                easing: Easing.bezier(0.4, 0, 0.2, 1),
+                useNativeDriver: true,
+            }),
+            Animated.timing(cardOpacity, {
+                toValue: 1,
+                duration: 400,
+                easing: Easing.bezier(0.4, 0, 0.2, 1),
+                useNativeDriver: true,
+            }),
+        ]).start();
+    }, [cardOpacity, cardTranslateY, live?.nextStop, reduceMotion]);
+
+    const loadSavedAndNotifications = useCallback(async () => {
+        if (!isAuthenticated) {
+            return;
+        }
+
+        setLoadingSaved(true);
+        try {
+            const [subscriptions, notifications] = await Promise.all([
+                getUserSubscriptions(),
+                getUserNotifications(),
+            ]);
+
+            const mapped = subscriptions
+                .map(extractSavedBus)
+                .filter((item): item is SavedBusCard => Boolean(item));
+
+            setSavedBuses(mapped);
+            setNotificationCount(
+                notifications.filter((n) => !(n.isRead ?? Boolean(n.readAt))).length,
+            );
+        } catch (error) {
+            captureSentryException(error, {
+                tags: {
+                    area: "user_home",
+                    operation: "load_saved_and_notifications",
+                },
             });
-            captureSentryException(liveErr, {
-              tags: {
-                area: "user_home",
-                operation: "get_user_bus_live",
-              },
-              extra: {
-                busId: item.busId,
-              },
-              level: "warning",
+            setSavedBuses([]);
+            setNotificationCount(0);
+        } finally {
+            setLoadingSaved(false);
+        }
+    }, [isAuthenticated]);
+
+    const activeBus = savedBuses[0] ?? null;
+
+    const loadLiveForActiveBus = useCallback(async () => {
+        if (!activeBus?.busId) {
+            setLive(null);
+            setLoadingLive(false);
+            return;
+        }
+
+        setLoadingLive(true);
+        try {
+            const snapshot = await getUserBusLive(activeBus.busId);
+            setLive(snapshot);
+        } catch (error) {
+            captureSentryException(error, {
+                tags: {
+                    area: "user_home",
+                    operation: "load_live_home",
+                },
+                extra: {
+                    busId: activeBus.busId,
+                },
             });
-            return item;
-          }
+            setLive(null);
+        } finally {
+            setLoadingLive(false);
+        }
+    }, [activeBus?.busId]);
+
+    // Transform stops to TimelineStop format for premium sheet
+    const timelineStops = useMemo<TimelineStop[]>(() => {
+        // Dummy data for demonstration and testing
+        const dummyStops: TimelineStop[] = [
+            {
+                id: "stop-1",
+                name: "Hitech City Metro Station",
+                status: "passed",
+                time: "9:45 AM",
+                eta: "9:45 AM",
+                helperText: "Completed",
+            },
+            {
+                id: "stop-2",
+                name: "Cyber Towers",
+                status: "passed",
+                time: "10:12 AM",
+                eta: "10:12 AM",
+                helperText: "Completed",
+            },
+            {
+                id: "stop-3",
+                name: "Tech Park Main Gate",
+                status: "current",
+                time: "10:28 AM",
+                eta: "10:28 AM",
+                helperText: "Arriving Now",
+            },
+            {
+                id: "stop-4",
+                name: "Innovation Hub",
+                status: "upcoming",
+                eta: "10:45 AM",
+                helperText: "3 min away",
+            },
+            {
+                id: "stop-5",
+                name: "Business District",
+                status: "upcoming",
+                eta: "11:02 AM",
+                helperText: "20 min away",
+            },
+            {
+                id: "stop-6",
+                name: "Downtown Station",
+                status: "upcoming",
+                eta: "11:25 AM",
+                helperText: "43 min away",
+            },
+            {
+                id: "stop-7",
+                name: "Central Park Stop",
+                status: "upcoming",
+                eta: "11:42 AM",
+                helperText: "60 min away",
+            },
+        ];
+
+        // Use live API data if available, otherwise use dummy data
+        if (!live?.stops) return dummyStops;
+
+        return live.stops
+            .map((stop, idx) => ({
+                id: stop.id || `stop-${idx}`,
+                name: stop.name || "Unknown Stop",
+                status: (stop.status === "passed" ? "passed" :
+                    stop.status === "current" ? "current" :
+                        "upcoming") as "passed" | "current" | "upcoming",
+                time: stop.departedClockTimeText || stop.arrivalClockTimeText,
+                eta: stop.arrivalClockTimeText,
+                helperText: stop.status === "passed" ? "Completed" :
+                    stop.status === "current" ? "Arriving Now" :
+                        "Upcoming",
+            }))
+            .sort((a, b) => {
+                const order = { passed: 0, current: 1, upcoming: 2 };
+                return order[a.status] - order[b.status];
+            });
+    }, [live?.stops]);
+
+    // Pan responder for sheet gestures
+    const panResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => sheetVisible,
+            onMoveShouldSetPanResponder: (_, { dy }) => sheetVisible && Math.abs(dy) > 10,
+            onPanResponderMove: (_, { dy }) => {
+                if (sheetVisible) {
+                    const newY = Math.max(80, Math.min(windowHeight - 20, windowHeight - 140 + dy));
+                    sheetAnimY.setValue(newY);
+                }
+            },
+            onPanResponderRelease: (_, { dy, vy }) => {
+                if (sheetVisible) {
+                    if (vy > 0.5 || dy > 100) {
+                        closeSheet();
+                    } else {
+                        expandSheet();
+                    }
+                }
+            },
         }),
-      );
+    ).current;
 
-      setSavedBuses(enriched);
-      setNotificationCount(
-        notifications.filter((n) => !(n.isRead ?? Boolean(n.readAt))).length,
-      );
-    } catch (loadErr) {
-      console.error("[UserHome][loadSavedAndNotifications]", loadErr);
-      captureSentryException(loadErr, {
-        tags: {
-          area: "user_home",
-          operation: "load_saved_and_notifications",
-        },
-      });
+    const cardPanResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => !sheetVisible,
+            onMoveShouldSetPanResponder: (_, { dy }) => !sheetVisible && Math.abs(dy) > 8,
+            onPanResponderRelease: (_, { dy, vy }) => {
+                if (sheetVisible || !activeBus) {
+                    return;
+                }
 
-      // Backend unreachable – keep UI usable with empty data
-      setSavedBuses([]);
-      setNotificationCount(0);
-    } finally {
-      setLoadingSaved(false);
-    }
-  }, [isAuthenticated]);
+                if (dy < -24 || vy < -0.45) {
+                    openSheet();
+                }
+            },
+        }),
+    ).current;
 
-  useFocusEffect(
-    useCallback(() => {
-      loadSavedAndNotifications();
-    }, [loadSavedAndNotifications]),
-  );
+    const expandSheet = useCallback(() => {
+        Animated.parallel([
+            Animated.spring(sheetAnimY, {
+                toValue: 80,
+                useNativeDriver: false,
+                tension: 50,
+                friction: 10,
+            }),
+            Animated.timing(backdropOpacity, {
+                toValue: 0.4,
+                duration: 250,
+                useNativeDriver: false,
+            }),
+        ]).start();
+    }, [sheetAnimY, backdropOpacity]);
 
-  const doSearch = async (raw: string) => {
-    const numberPlate = raw.trim().toUpperCase();
-    if (!numberPlate) {
-      setResults([]);
-      return;
-    }
+    const closeSheet = useCallback(() => {
+        Animated.parallel([
+            Animated.spring(sheetAnimY, {
+                toValue: windowHeight,
+                useNativeDriver: false,
+                tension: 50,
+                friction: 10,
+            }),
+            Animated.timing(backdropOpacity, {
+                toValue: 0,
+                duration: 250,
+                useNativeDriver: false,
+            }),
+        ]).start(() => {
+            setSheetVisible(false);
+        });
+    }, [sheetAnimY, backdropOpacity, windowHeight]);
 
-    setQuery(numberPlate);
+    const openSheet = useCallback(() => {
+        setSheetVisible(true);
+        expandSheet();
+    }, [expandSheet]);
 
-    setSearching(true);
-    setHasSearched(true);
-    setSearchError(null);
+    useFocusEffect(
+        useCallback(() => {
+            void loadSavedAndNotifications();
+        }, [loadSavedAndNotifications]),
+    );
 
-    addSentryBreadcrumb({
-      category: "user_home",
-      message: "Bus search requested",
-      level: "info",
-      data: {
-        numberPlate,
-      },
+    useEffect(() => {
+        void loadLiveForActiveBus();
+
+        if (!activeBus?.busId) {
+            return;
+        }
+
+        const timer = setInterval(() => {
+            void loadLiveForActiveBus();
+        }, 10000);
+
+        return () => {
+            clearInterval(timer);
+        };
+    }, [activeBus?.busId, loadLiveForActiveBus]);
+
+    const routeCoordinates = useMemo<Coord[]>(() => {
+        if (live?.encodedPolyline) {
+            try {
+                const decoded = polyline.decode(live.encodedPolyline) as [number, number][];
+                const mapped = decoded.map(([latitude, longitude]) => ({ latitude, longitude }));
+                if (mapped.length > 1) {
+                    return mapped;
+                }
+            } catch {
+                // Fallback to stop-based path.
+            }
+        }
+
+        const points: Coord[] = [];
+
+        const startCandidate = {
+            latitude: live?.routeStartLat ?? undefined,
+            longitude: live?.routeStartLng ?? undefined,
+        };
+
+        if (isFiniteCoord(startCandidate)) {
+            points.push({ latitude: startCandidate.latitude, longitude: startCandidate.longitude });
+        }
+
+        (live?.stops ?? [])
+            .map(toStopCoord)
+            .filter((stop): stop is NonNullable<ReturnType<typeof toStopCoord>> => Boolean(stop))
+            .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER))
+            .forEach((stop) => {
+                points.push({ latitude: stop.latitude, longitude: stop.longitude });
+            });
+
+        const endCandidate = {
+            latitude: live?.routeEndLat ?? undefined,
+            longitude: live?.routeEndLng ?? undefined,
+        };
+
+        if (isFiniteCoord(endCandidate)) {
+            points.push({ latitude: endCandidate.latitude, longitude: endCandidate.longitude });
+        }
+
+        return points.filter((point, index) => {
+            if (index === 0) {
+                return true;
+            }
+            const prev = points[index - 1];
+            return (
+                Math.abs(prev.latitude - point.latitude) > 1e-6 ||
+                Math.abs(prev.longitude - point.longitude) > 1e-6
+            );
+        });
+    }, [live]);
+
+    const mapStops = useMemo(() => {
+        return (live?.stops ?? [])
+            .map(toStopCoord)
+            .filter((stop): stop is NonNullable<ReturnType<typeof toStopCoord>> => Boolean(stop))
+            .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
+    }, [live?.stops]);
+
+    const currentLocation = useMemo(() => {
+        const candidate = {
+            latitude: live?.currentLat ?? undefined,
+            longitude: live?.currentLng ?? undefined,
+        };
+        return isFiniteCoord(candidate)
+            ? { latitude: candidate.latitude, longitude: candidate.longitude }
+            : undefined;
+    }, [live?.currentLat, live?.currentLng]);
+
+    const topLocationLabel = useMemo(() => {
+        return live?.routeStartName?.trim() || activeBus?.nextStop || "Tech park";
+    }, [activeBus?.nextStop, live?.routeStartName]);
+
+    const nextStopTitle = useMemo(() => {
+        return live?.nextStop?.trim() || activeBus?.nextStop || "bvrit";
+    }, [activeBus?.nextStop, live?.nextStop]);
+
+    const etaLabel = useMemo(() => {
+        return formatEtaLabel(live?.estimatedArrival, live?.etaToDestinationSeconds);
+    }, [live?.estimatedArrival, live?.etaToDestinationSeconds]);
+
+    const nextStopSubtitle = useMemo(() => {
+        const location = live?.routeEndName?.trim() || live?.routeName || activeBus?.routeName || "Sangareddy";
+        return `${location} • Upcoming`;
+    }, [activeBus?.routeName, live?.routeEndName, live?.routeName]);
+
+    const pulseScale = pulse.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 1.3],
     });
 
-    try {
-      const list = await searchUserBuses(numberPlate);
-      setResults(list);
-      if (list.length === 0) {
-        setSearchError("No buses found for this number plate");
-      }
-      setRecentSearches((prev) => {
-        const deduped = prev.filter(
-          (item) => item.toLowerCase() !== numberPlate.toLowerCase(),
+    const pulseOpacity = pulse.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.8, 0],
+    });
+
+    if (!isHydrated) {
+        return (
+            <SafeAreaView className="flex-1 items-center justify-center bg-slate-100">
+                <ActivityIndicator size="large" color={PALETTE.activeBlue} />
+            </SafeAreaView>
         );
-        return [numberPlate, ...deduped].slice(0, 8);
-      });
-    } catch (error: any) {
-      console.error("[UserHome][doSearch]", {
-        numberPlate,
-        error,
-      });
-      captureSentryException(error, {
-        tags: {
-          area: "user_home",
-          operation: "search_buses",
-        },
-        extra: {
-          numberPlate,
-        },
-      });
-
-      setSearchError(
-        error?.response?.data?.message ?? error?.message ?? "Search failed",
-      );
-      setResults([]);
-    } finally {
-      setSearching(false);
     }
-  };
 
-  const savedMap = useMemo(
-    () => new Map(savedBuses.map((item) => [item.busId, item])),
-    [savedBuses],
-  );
-
-  const toggleSaved = async (bus: BusSearchResult) => {
-    try {
-      if (!bus?.busId) {
-        return;
-      }
-
-      const existing = savedMap.get(bus.busId);
-
-      addSentryBreadcrumb({
-        category: "user_home",
-        message: existing ? "Removing bus subscription" : "Creating bus subscription",
-        level: "info",
-        data: {
-          busId: bus.busId,
-          numberPlate: bus.numberPlate,
-        },
-      });
-
-      if (existing) {
-        await deleteUserSubscription(existing.subscriptionId);
-        setSavedBuses((prev) => prev.filter((b) => b.busId !== bus.busId));
-        return;
-      }
-
-      const created = await createUserSubscription({
-        busId: bus.busId,
-        notifyOnBusStart: true,
-        notifyOnNearStop: true,
-        nearRadiusMeters: 150,
-      });
-
-      const mapped = extractSavedBus(created);
-      if (mapped) {
-        setSavedBuses((prev) => [
-          {
-            ...mapped,
-            numberPlate: bus.numberPlate,
-            routeName: bus.routeName,
-          },
-          ...prev,
-        ]);
-      }
-    } catch (saveErr) {
-      console.error("[UserHome][toggleSaved]", {
-        busId: bus?.busId,
-        error: saveErr,
-      });
-      captureSentryException(saveErr, {
-        tags: {
-          area: "user_home",
-          operation: "toggle_saved",
-        },
-        extra: {
-          busId: bus?.busId ?? null,
-        },
-        level: "warning",
-      });
-
-      // best-effort – keep UI usable
+    if (!isAuthenticated) {
+        return <Redirect href="/(driver)/login" />;
     }
-  };
 
-  if (!isHydrated) {
     return (
-      <SafeAreaView className="flex-1 items-center justify-center bg-slate-50">
-        <ActivityIndicator size="large" color="#1d4ed8" />
-      </SafeAreaView>
-    );
-  }
-
-  if (!isAuthenticated) {
-    return <Redirect href="/(driver)/login" />;
-  }
-
-  return (
-    <SafeAreaView className="flex-1 bg-[#F2F4F8]">
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: 18 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-200 bg-white">
-          <View className="flex-row items-center gap-2">
-            <MaterialCommunityIcons name="bus" size={22} color="#1847BA" />
-            <Text className="text-xl font-extrabold text-slate-900">
-              BusTracker
-            </Text>
-          </View>
-          <Pressable onPress={() => router.push("/(user)/alerts" as any)}>
-            <View className="h-10 w-10 items-center justify-center rounded-full bg-slate-100">
-              <Ionicons
-                name="notifications-outline"
-                size={20}
-                color="#475569"
-              />
-            </View>
-            {notificationCount > 0 && (
-              <View className="absolute -right-1 -top-1 h-4 min-w-[16px] rounded-full bg-red-500 px-1 items-center justify-center">
-                <Text className="text-[9px] font-bold text-white">
-                  {notificationCount > 99 ? "99+" : notificationCount}
-                </Text>
-              </View>
-            )}
-          </Pressable>
-        </View>
-
-        {/* Search hero card */}
-        <View className="px-4 pt-4">
-          <View className="rounded-2xl bg-[#1E43B8] px-5 py-5 shadow-sm">
-            <Text className="text-xl font-extrabold text-white">
-              Where is your bus?
-            </Text>
-            <View className="mt-3 flex-row items-center rounded-xl bg-white px-3">
-              <Feather name="search" size={18} color="#95A2B7" />
-              <TextInput
-                className="ml-2 flex-1 py-3 text-sm text-slate-800"
-                placeholder="Search by plate (e.g., ABC-1234)"
-                placeholderTextColor="#95A2B7"
-                value={query}
-                onChangeText={setQuery}
-                onSubmitEditing={() => doSearch(query)}
-                autoCapitalize="characters"
-                returnKeyType="search"
-              />
-              {searching ? (
-                <ActivityIndicator size="small" color="#1847BA" />
-              ) : (
-                <Pressable onPress={() => doSearch(query)}>
-                  <Ionicons
-                    name="arrow-forward-circle"
-                    size={22}
-                    color="#1847BA"
-                  />
-                </Pressable>
-              )}
-            </View>
-          </View>
-        </View>
-
-        {/* Search results */}
-        {hasSearched && (
-          <View className="mt-3 px-4">
-            <View className="mb-2 flex-row items-center justify-between">
-              <Text className="text-base font-bold text-slate-900">
-                Search Results
-              </Text>
-              <Text className="text-xs font-semibold text-slate-500">
-                {results.length} found
-              </Text>
+        <SafeAreaView className="flex-1 bg-slate-100">
+            <View className="absolute inset-0">
+                <RouteMap
+                    coordinates={routeCoordinates}
+                    stops={mapStops}
+                    currentLocation={currentLocation}
+                    encodedPolyline={live?.encodedPolyline}
+                />
+                <View pointerEvents="none" className="absolute inset-0 bg-slate-100/20" />
             </View>
 
-            {results.length === 0 ? (
-              <View className="rounded-xl border border-slate-200 bg-white p-4">
-                <Text className="text-sm text-slate-600">
-                  No buses found. Please check the plate number and try again.
-                </Text>
-              </View>
-            ) : (
-              results.map((bus) => {
-                const isSaved = savedMap.has(bus.busId);
-                return (
-                  <Pressable
-                    key={`top-${bus.busId}`}
-                    className="mb-3 rounded-xl border border-slate-200 bg-white p-4"
+            <View items-center className="absolute left-0 right-0 top-0 z-10">
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back"
                     onPress={() => {
-                      router.push({
-                        pathname: "/(user)/tracking",
-                        params: {
-                          busId: String(bus.busId),
-                          plate: bus.numberPlate,
-                          route: bus.routeName,
-                          routeId: bus.routeId,
-                        },
-                      } as any);
+                        if (router.canGoBack()) {
+                            router.back();
+                            return;
+                        }
+                        router.replace("/(user)/index" as never);
                     }}
-                  >
-                    <View className="flex-row items-center">
-                      <View className="h-12 w-12 items-center justify-center rounded-xl bg-slate-100">
-                        <MaterialCommunityIcons
-                          name="bus"
-                          size={24}
-                          color="#1847BA"
-                        />
-                      </View>
-                      <View className="ml-3 flex-1">
-                        <Text className="text-base font-bold text-slate-900">
-                          {bus.routeName}
-                        </Text>
-                        <Text className="text-sm text-slate-500">
-                          Plate: {bus.numberPlate}
-                        </Text>
-                        <View className="mt-2 flex-row items-center gap-2">
-                          <View className="rounded-full bg-blue-50 px-2.5 py-1">
-                            <Text className="text-[11px] font-semibold text-blue-700">
-                              {getTripStatusLabel(bus.tripStatus)}
-                            </Text>
-                          </View>
-                          <Text className="text-[11px] text-slate-500">
-                            {getFreshnessLabel(bus.lastUpdated)}
-                          </Text>
+                    className="absolute left-4 z-20 h-11 w-11 items-center justify-center rounded-full border border-white/40 bg-white/80 shadow active:opacity-60"
+                    style={{ top: insets.top + 14 }}
+                >
+                    <Ionicons name="chevron-back" size={20} color={PALETTE.darkAccent} />
+                </Pressable>
+
+                <GlassCard style={{ top: insets.top + 14, left: 68, right: 16 }}>
+                    <Feather name="map-pin" size={18} color={PALETTE.darkAccent} />
+                    <Text numberOfLines={1} className="ml-2 shrink text-[15px] font-medium text-slate-800">
+                        {topLocationLabel}
+                    </Text>
+                </GlassCard>
+            </View>
+
+            <View
+                className="absolute left-4 right-4"
+                style={{ bottom: insets.bottom + 82 }}
+            >
+                <Animated.View
+                    style={{
+                        transform: [{ translateY: cardTranslateY }],
+                        opacity: cardOpacity,
+                    }}
+                >
+                    <Pressable
+                        {...cardPanResponder.panHandlers}
+                        accessibilityRole="button"
+                        accessibilityLabel="Open live trip tracking"
+                        onPress={() => {
+                            // if (!activeBus) {
+                            //     return;
+
+                            // }
+
+                            openSheet();
+                        }}
+                        className="min-h-[46px] mb-12 flex-row items-center justify-between rounded-[44px] border border-white/45 bg-white/85 px-6 py-4 shadow active:scale-95 active:opacity-60"
+                    >
+                        <View className="flex-1 flex-row items-center pr-3">
+                            <View className="mr-3 w-[16px] items-center justify-center">
+                                <Animated.View
+                                    style={[
+                                        {
+                                            position: "absolute",
+                                            width: 18,
+                                            height: 18,
+                                            borderRadius: 9,
+                                            backgroundColor: "rgba(59,130,246,0.35)",
+                                        },
+                                        {
+                                            transform: [{ scale: pulseScale }],
+                                            opacity: reduceMotion ? 0 : pulseOpacity,
+                                        },
+                                    ]}
+                                />
+                                <View className="h-[10px] w-[10px] rounded-full bg-blue-500" />
+                                <View className="absolute top-[10px] h-7 w-[1px] bg-blue-300" />
+                            </View>
+
+                            <View className="shrink flex-1">
+                                <Text numberOfLines={1} className="text-[16px] font-semibold leading-[22px] text-slate-800">
+                                    Next Stop: {nextStopTitle}
+                                </Text>
+                                <Text numberOfLines={1} className="mt-0.5 text-[12px] leading-[20px] text-slate-600">
+                                    {nextStopSubtitle.split("•")[0]?.trim()}
+                                    <Text className="text-[12px] leading-[20px] text-orange-700">• Upcoming</Text>
+                                </Text>
+                            </View>
                         </View>
-                      </View>
-                      <Pressable onPress={() => toggleSaved(bus)}>
-                        <Ionicons
-                          name={isSaved ? "star" : "star-outline"}
-                          size={22}
-                          color="#1847BA"
-                        />
-                      </Pressable>
-                    </View>
-                  </Pressable>
-                );
-              })
-            )}
-          </View>
-        )}
 
-        {/* Map preview */}
-        <View className="px-4 pt-4">
-          <ImageBackground
-            source={{ uri: FALLBACK_MAP_IMAGE }}
-            imageStyle={{ borderRadius: 16 }}
-            className="h-40 overflow-hidden rounded-2xl"
-          >
-            <View className="absolute inset-0 bg-black/25" />
-            <View className="absolute bottom-3 left-3 flex-row items-center">
-              <View className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-              <Text className="ml-2 text-sm font-semibold text-white">
-                Live Transit View
-              </Text>
+                        <View className="rounded-[18px] bg-slate-200/80 px-5 py-3">
+                            <Text className="text-[14px] font-semibold leading-[22px] text-slate-800">ETA: {etaLabel}</Text>
+                        </View>
+                    </Pressable>
+                </Animated.View>
             </View>
-          </ImageBackground>
-        </View>
 
-        {/* Search error */}
-        {searchError && (
-          <View className="mx-4 mt-3 rounded-xl bg-red-50 px-4 py-3">
-            <Text className="text-sm text-red-700">{searchError}</Text>
-          </View>
-        )}
-
-        {/* Saved Buses */}
-        <View className="mt-4 px-4">
-          <View className="mb-3 flex-row items-center justify-between">
-            <Text className="text-lg font-bold text-slate-900">
-              Saved Buses
-            </Text>
-            <Pressable onPress={() => router.push("/(user)/saved" as any)}>
-              <Text className="text-sm font-semibold text-[#1847BA]">
-                View All
-              </Text>
-            </Pressable>
-          </View>
-
-          {loadingSaved ? (
-            <View className="items-center py-6">
-              <ActivityIndicator size="small" color="#1847BA" />
-            </View>
-          ) : savedBuses.length === 0 ? (
-            <View className="rounded-xl border border-slate-200 bg-white p-4">
-              <Text className="text-sm text-slate-500">No saved buses yet</Text>
-            </View>
-          ) : (
-            savedBuses.slice(0, 2).map((item) => (
-              <Pressable
-                key={item.subscriptionId}
-                className="mb-3 rounded-xl border border-slate-200 bg-white p-4"
-                onPress={() =>
-                  router.push({
-                    pathname: "/(user)/tracking",
-                    params: {
-                      busId: String(item.busId),
-                      plate: item.numberPlate,
-                      route: item.routeName,
-                      routeId: item.routeId,
-                    },
-                  } as any)
-                }
-              >
-                <View className="flex-row items-center">
-                  <View className="h-12 w-12 items-center justify-center rounded-xl bg-slate-100">
-                    <MaterialCommunityIcons
-                      name="bus"
-                      size={24}
-                      color="#1847BA"
-                    />
-                  </View>
-                  <View className="ml-3 flex-1">
-                    <Text className="text-base font-bold text-slate-900">
-                      {item.routeName}
-                    </Text>
-                    <Text className="text-sm text-slate-500">
-                      Plate: {item.numberPlate}
-                      {item.nextStop ? ` · Next: ${item.nextStop}` : ""}
-                    </Text>
-                    <View className="mt-2 flex-row items-center gap-2">
-                      <View className="rounded-full bg-blue-50 px-2.5 py-1">
-                        <Text className="text-[11px] font-semibold text-blue-700">
-                          {getTripStatusLabel(item.tripStatus)}
-                        </Text>
-                      </View>
-                      <Text className="text-[11px] text-slate-500">
-                        {getFreshnessLabel(item.lastUpdated)}
-                      </Text>
-                    </View>
-                  </View>
-                  <View className="items-end gap-1">
-                    <View className="rounded-full bg-emerald-100 px-2.5 py-1">
-                      <Text className="text-xs font-bold text-emerald-700">
-                        {item.etaLabel ?? "Notify"}
-                      </Text>
-                    </View>
-                    <Ionicons name="star" size={20} color="#1847BA" />
-                  </View>
-                </View>
-              </Pressable>
-            ))
-          )}
-        </View>
-
-        {/* Recent Searches */}
-        <View className="mt-2 px-4 pb-2">
-          <Text className="mb-3 text-lg font-bold text-slate-900">
-            Recent Searches
-          </Text>
-          <View className="flex-row flex-wrap gap-2">
-            {recentSearches.map((term) => (
-              <Pressable
-                key={term}
-                className="flex-row items-center rounded-full border border-slate-300 bg-[#EAF0F6] px-4 py-2"
-                onPress={() => {
-                  setQuery(term);
-                  doSearch(term);
+            <View
+                className="absolute mb-8 left-4 right-4 flex-row items-center justify-between rounded-[44px] border border-white/40 bg-white/80 px-1 pt-1.5 shadow"
+                style={{
+                    bottom: insets.bottom + 2,
+                    minHeight: 72 + Math.max(insets.bottom, 8),
+                    paddingBottom: Math.max(insets.bottom, 8),
                 }}
-              >
-                <Feather name="clock" size={14} color="#334155" />
-                <Text className="ml-2 text-sm text-slate-700">{term}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      </ScrollView>
+            >
+                <Pressable
+                    accessibilityRole="tab"
+                    accessibilityLabel="Home tab"
+                    onPress={() => router.replace("/(user)/home" as never)}
+                    className="min-h-11 min-w-[78px] items-center justify-center rounded-[28px] bg-slate-200/90 px-6 py-2 active:scale-95 active:opacity-60"
+                >
+                    <Ionicons name="home" size={24} color={PALETTE.activeBlue} />
+                    <Text className="mt-1 text-[10px] font-semibold leading-[12px] text-blue-500">Home</Text>
+                </Pressable>
 
-      {/* Bottom navigation */}
-      <View className="flex-row items-center justify-around border-t border-slate-200 bg-white py-2.5">
-        <Pressable
-          className="items-center"
-          onPress={() => router.replace("/(user)/home" as any)}
-        >
-          <Ionicons name="home" size={22} color="#1847BA" />
-          <Text className="mt-0.5 text-[11px] font-bold tracking-wide text-[#1847BA]">
-            HOME
-          </Text>
-        </Pressable>
-        <Pressable
-          className="items-center"
-          onPress={() => router.push("/(user)/alerts" as any)}
-        >
-          <Ionicons name="notifications-outline" size={22} color="#94A3B8" />
-          <Text className="mt-0.5 text-[11px] font-bold tracking-wide text-slate-400">
-            ALERTS
-          </Text>
-        </Pressable>
-        <Pressable
-          className="items-center"
-          onPress={() => router.push("/(user)/profile" as any)}
-        >
-          <Ionicons name="person-outline" size={22} color="#94A3B8" />
-          <Text className="mt-0.5 text-[11px] font-bold tracking-wide text-slate-400">
-            PROFILE
-          </Text>
-        </Pressable>
-      </View>
-    </SafeAreaView>
-  );
+                <Pressable
+                    accessibilityRole="tab"
+                    accessibilityLabel="Alerts tab"
+                    onPress={() => router.push("/(user)/alerts" as never)}
+                    className="relative min-h-11 min-w-[72px] items-center justify-center px-2 py-2 active:scale-95 active:opacity-60"
+                >
+                    <Ionicons name="notifications-outline" size={24} color={PALETTE.darkAccent} />
+                    <Text className="mt-1 text-[10px] font-medium leading-[12px] text-slate-800">Alerts</Text>
+                    {notificationCount > 0 && (
+                        <View className="absolute -right-1 -top-0.5 h-4 min-w-[16px] items-center justify-center rounded-full bg-orange-700 px-1">
+                            <Text className="text-[9px] font-bold text-white">
+                                {notificationCount > 9 ? "9+" : notificationCount}
+                            </Text>
+                        </View>
+                    )}
+                </Pressable>
+
+                <Pressable
+                    accessibilityRole="tab"
+                    accessibilityLabel="Settings tab"
+                    onPress={() => router.push("/(user)/profile" as never)}
+                    className="min-h-11 min-w-[72px] items-center justify-center px-2 py-2 active:scale-95 active:opacity-60"
+                >
+                    <Ionicons name="settings-outline" size={24} color={PALETTE.darkAccent} />
+                    <Text className="mt-1 text-[10px] font-medium leading-[12px] text-slate-800">Settings</Text>
+                </Pressable>
+
+                <Pressable
+                    accessibilityRole="tab"
+                    accessibilityLabel="Saved buses tab"
+                    onPress={() => router.push("/(user)/saved" as never)}
+                    className="min-h-11 min-w-[72px] items-center justify-center px-2 py-2 active:scale-95 active:opacity-60"
+                >
+                    <Ionicons name="bookmark-outline" size={24} color={PALETTE.darkAccent} />
+                    <Text className="mt-1 text-[10px] font-medium leading-[12px] text-slate-800">Label</Text>
+                </Pressable>
+            </View>
+
+            {(loadingSaved || loadingLive) && (
+                <View
+                    pointerEvents="none"
+                    className="absolute self-center flex-row items-center rounded-full border border-white/50 bg-white/85 px-3 py-2"
+                    style={{ top: Platform.OS === "ios" ? 72 : 56 }}
+                >
+                    <ActivityIndicator size="small" color={PALETTE.darkAccent} />
+                    <Text className="ml-2 text-xs font-medium text-slate-800">Syncing live route...</Text>
+                </View>
+            )}
+
+            {!loadingSaved && savedBuses.length === 0 && (
+                <View
+                    className="absolute self-center flex-row items-center rounded-full border border-white/45 bg-slate-100/80 px-3 py-2"
+                    style={{ top: insets.top + 96 }}
+                >
+                    <Ionicons name="bus-outline" size={16} color={PALETTE.mutedText} />
+                    <Text className="ml-1.5 text-xs font-medium text-slate-500">Save a bus to start real-time tracking</Text>
+                </View>
+            )}
+
+            {/* Backdrop overlay */}
+            <Animated.View
+                pointerEvents={sheetVisible ? "auto" : "none"}
+                className="absolute inset-0 bg-slate-900"
+                style={{
+                    opacity: backdropOpacity,
+                }}
+            />
+
+            {/* Bottom Sheet Overlay */}
+            {sheetVisible && (
+                <Animated.View
+                    {...panResponder.panHandlers}
+                    className="absolute bottom-0 left-0 right-0 z-50"
+                    style={{
+                        transform: [{ translateY: sheetAnimY }],
+                        height: windowHeight,
+                    }}
+                >
+                    <PremiumBottomSheet
+                        routeOrigin={live?.routeStartName || topLocationLabel}
+                        routeDestination={live?.routeEndName || nextStopSubtitle.split("•")[0] || "End"}
+                        stops={timelineStops}
+                        expandedHeight={80}
+                        onClose={closeSheet}
+                    />
+
+                    {/* Close button overlay for accessibility */}
+                    <Pressable
+                        onPress={closeSheet}
+                        className="absolute right-4 top-4 z-10 h-10 w-10 items-center justify-center rounded-full bg-white/80"
+                    >
+                        <Ionicons name="close" size={24} color={PALETTE.darkAccent} />
+                    </Pressable>
+                </Animated.View>
+            )}
+        </SafeAreaView>
+    );
 }

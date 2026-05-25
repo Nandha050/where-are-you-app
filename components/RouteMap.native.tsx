@@ -1,5 +1,6 @@
 import polylineLib from "@mapbox/polyline";
 import React, { useEffect, useMemo, useRef } from "react";
+import { View } from "react-native";
 import MapView, { Marker, Polyline } from "react-native-maps";
 
 type Coord = { latitude: number; longitude: number };
@@ -22,6 +23,185 @@ type RouteMapProps = {
    */
   encodedPolyline?: string;
 };
+
+const ROUTE_LINE_GLOW = "rgba(77,124,15,0.18)";
+const ROUTE_LINE_CORE = "rgba(77,124,15,0.4)";
+const ROUTE_LINE_ACCENT = "rgba(77,124,15,0.25)";
+const STREET_MAP_STYLE = [
+  { elementType: "geometry", stylers: [{ color: "#eff3f8" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#334155" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#f8fafc" }] },
+  {
+    featureType: "administrative",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#d5deea" }],
+  },
+  {
+    featureType: "poi",
+    elementType: "labels.icon",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "road",
+    elementType: "geometry",
+    stylers: [{ color: "#ffffff" }],
+  },
+  {
+    featureType: "road.arterial",
+    elementType: "geometry",
+    stylers: [{ color: "#f5f8fc" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "geometry",
+    stylers: [{ color: "#dce9ff" }],
+  },
+  {
+    featureType: "transit",
+    elementType: "labels",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "water",
+    elementType: "geometry",
+    stylers: [{ color: "#c7e2ff" }],
+  },
+];
+
+const stopColors = (status?: StopStatus) => {
+  if (status === "passed") {
+    return {
+      halo: "rgba(16,185,129,0.2)",
+      core: "#10b981",
+    };
+  }
+  if (status === "next") {
+    return {
+      halo: "rgba(24,71,186,0.2)",
+      core: "#1847BA",
+    };
+  }
+  return {
+    halo: "rgba(245,158,11,0.22)",
+    core: "#f59e0b",
+  };
+};
+
+const StopMarker = ({ status }: { status?: StopStatus }) => {
+  const colors = stopColors(status);
+  return (
+    <View
+      style={{
+        width: 26,
+        height: 26,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <View
+        style={{
+          position: "absolute",
+          width: 24,
+          height: 24,
+          borderRadius: 12,
+          backgroundColor: colors.halo,
+        }}
+      />
+      <View
+        style={{
+          width: 18,
+          height: 18,
+          borderRadius: 9,
+          backgroundColor: "#FFFFFF",
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: 1,
+          borderColor: "rgba(15,23,42,0.08)",
+        }}
+      >
+        <View
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: 5,
+            backgroundColor: colors.core,
+          }}
+        />
+      </View>
+    </View>
+  );
+};
+
+const LiveBusMarker = () => (
+  <View
+    style={{
+      width: 44,
+      height: 44,
+      alignItems: "center",
+      justifyContent: "center",
+    }}
+  >
+    <View
+      style={{
+        position: "absolute",
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: "rgba(59,130,246,0.35)",
+      }}
+    />
+    <View
+      style={{
+        position: "absolute",
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: "rgba(59,130,246,0.24)",
+      }}
+    />
+    <View
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: "#FFFFFF",
+        alignItems: "center",
+        justifyContent: "center",
+        shadowColor: "#0f172a",
+        shadowOpacity: 0.25,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 2 },
+        elevation: 6,
+      }}
+    >
+      <View
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: 12,
+          backgroundColor: "#2563eb",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <View
+          style={{
+            width: 0,
+            height: 0,
+            borderLeftWidth: 5,
+            borderRightWidth: 5,
+            borderBottomWidth: 10,
+            borderLeftColor: "transparent",
+            borderRightColor: "transparent",
+            borderBottomColor: "#FFFFFF",
+            transform: [{ rotate: "18deg" }],
+            marginLeft: 1,
+          }}
+        />
+      </View>
+    </View>
+  </View>
+);
 
 export default function RouteMap({
   coordinates: coordinatesProp,
@@ -83,61 +263,81 @@ export default function RouteMap({
     ];
   }, [coordinates, validCurrentLocation, validStops]);
 
-  const initialRegion = useMemo(() => {
-    const routePoints: Coord[] = pointsForRegion;
-    if (!routePoints.length) {
-      return {
-        latitude: 17.385,
-        longitude: 78.4867,
-        latitudeDelta: 0.2,
-        longitudeDelta: 0.2,
-      };
+  const focusPoint = useMemo<Coord>(() => {
+    if (validCurrentLocation) {
+      return validCurrentLocation;
     }
 
-    const latitudes = routePoints.map((p) => p.latitude);
-    const longitudes = routePoints.map((p) => p.longitude);
+    if (validStops.length > 0) {
+      return { latitude: validStops[0].latitude, longitude: validStops[0].longitude };
+    }
 
-    const minLat = Math.min(...latitudes);
-    const maxLat = Math.max(...latitudes);
-    const minLng = Math.min(...longitudes);
-    const maxLng = Math.max(...longitudes);
+    if (coordinates.length > 0) {
+      return coordinates[Math.floor(coordinates.length / 2)];
+    }
 
-    const centerLat = (minLat + maxLat) / 2;
-    const centerLng = (minLng + maxLng) / 2;
+    return { latitude: 17.385, longitude: 78.4867 };
+  }, [coordinates, validCurrentLocation, validStops]);
 
+  const initialRegion = useMemo(() => {
     return {
-      latitude: centerLat,
-      longitude: centerLng,
-      latitudeDelta: Math.max((maxLat - minLat) * 1.6, 0.01),
-      longitudeDelta: Math.max((maxLng - minLng) * 1.6, 0.01),
+      latitude: focusPoint.latitude,
+      longitude: focusPoint.longitude,
+      latitudeDelta: 0.003,
+      longitudeDelta: 0.003,
     };
-  }, [pointsForRegion]);
+  }, [focusPoint]);
 
   useEffect(() => {
-    if (!mapRef.current || !pointsForRegion.length) {
+    if (!mapRef.current) {
       return;
     }
 
-    try {
-      mapRef.current.fitToCoordinates(pointsForRegion, {
-        animated: true,
-        edgePadding: {
-          top: 44,
-          right: 44,
-          bottom: 44,
-          left: 44,
-        },
-      });
-    } catch {
-      // MapView can throw if called before fully mounted; initialRegion still keeps map visible.
-    }
-  }, [pointsForRegion]);
+    const pointsToFit = pointsForRegion.filter((point) => isFiniteCoord(point));
 
-  const stopPinColor = (status?: StopStatus) => {
-    if (status === "passed") return "#10b981";
-    if (status === "next") return "#1847BA";
-    return "#f59e0b";
-  };
+    if (pointsToFit.length > 1) {
+      try {
+        mapRef.current.fitToCoordinates(pointsToFit, {
+          edgePadding: {
+            top: 140,
+            right: 48,
+            bottom: 220,
+            left: 48,
+          },
+          animated: true,
+        });
+        return;
+      } catch {
+        // Fall back to camera animation when fitToCoordinates is unavailable.
+      }
+    }
+
+    try {
+      mapRef.current.animateCamera(
+        {
+          center: focusPoint,
+          zoom: 16,
+          heading: 0,
+          pitch: 0,
+        },
+        { duration: 450 },
+      );
+    } catch {
+      try {
+        mapRef.current.animateToRegion(
+          {
+            latitude: focusPoint.latitude,
+            longitude: focusPoint.longitude,
+            latitudeDelta: 0.006,
+            longitudeDelta: 0.006,
+          },
+          450,
+        );
+      } catch {
+        // Initial region remains as fallback.
+      }
+    }
+  }, [focusPoint, pointsForRegion]);
 
   return (
     <MapView
@@ -145,6 +345,8 @@ export default function RouteMap({
         mapRef.current = instance;
       }}
       style={{ flex: 1 }}
+      mapType="standard"
+      customMapStyle={STREET_MAP_STYLE}
       initialRegion={initialRegion}
     >
       {/* Start marker */}
@@ -170,9 +372,11 @@ export default function RouteMap({
                 ? "Passed"
                 : "Upcoming"
           }
-          pinColor={stopPinColor(stop.status)}
-          tracksViewChanges={false}
-        />
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges
+        >
+          <StopMarker status={stop.status} />
+        </Marker>
       ))}
 
       {/* End marker */}
@@ -187,12 +391,27 @@ export default function RouteMap({
 
       {/* Route polyline — decoded from stored admin encodedPolyline, passes through every stop */}
       {coordinates.length > 1 ? (
-        <Polyline
-          coordinates={coordinates}
-          strokeColor="#1a73e8"
-          strokeWidth={4}
-          geodesic
-        />
+        <>
+          <Polyline
+            coordinates={coordinates}
+            strokeColor={ROUTE_LINE_GLOW}
+            strokeWidth={11}
+            geodesic
+          />
+          <Polyline
+            coordinates={coordinates}
+            strokeColor={ROUTE_LINE_CORE}
+            strokeWidth={5}
+            geodesic
+          />
+          <Polyline
+            coordinates={coordinates}
+            strokeColor={ROUTE_LINE_ACCENT}
+            strokeWidth={2.4}
+            lineDashPattern={[3, 8]}
+            geodesic
+          />
+        </>
       ) : null}
 
       {/* Live bus marker */}
@@ -200,8 +419,11 @@ export default function RouteMap({
         <Marker
           coordinate={validCurrentLocation}
           title="Bus"
-          pinColor="#2563eb"
-        />
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges
+        >
+          <LiveBusMarker />
+        </Marker>
       ) : null}
     </MapView>
   );

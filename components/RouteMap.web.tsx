@@ -26,6 +26,95 @@ type RouteMapProps = {
   encodedPolyline?: string;
 };
 
+const ROUTE_LINE_GLOW = "rgba(77,124,15,0.18)";
+const ROUTE_LINE_CORE = "rgba(77,124,15,0.4)";
+const ROUTE_LINE_ACCENT = "rgba(77,124,15,0.25)";
+const STREET_MAP_STYLE = [
+  { elementType: "geometry", stylers: [{ color: "#eff3f8" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#334155" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#f8fafc" }] },
+  {
+    featureType: "administrative",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#d5deea" }],
+  },
+  {
+    featureType: "poi",
+    elementType: "labels.icon",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "road",
+    elementType: "geometry",
+    stylers: [{ color: "#ffffff" }],
+  },
+  {
+    featureType: "road.arterial",
+    elementType: "geometry",
+    stylers: [{ color: "#f5f8fc" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "geometry",
+    stylers: [{ color: "#dce9ff" }],
+  },
+  {
+    featureType: "transit",
+    elementType: "labels",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "water",
+    elementType: "geometry",
+    stylers: [{ color: "#c7e2ff" }],
+  },
+];
+
+const LIVE_BUS_MARKER_SVG = encodeURIComponent(`
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="24" cy="24" r="20" fill="rgba(37,99,235,0.22)"/>
+  <circle cx="24" cy="24" r="16" fill="#FFFFFF"/>
+  <circle cx="24" cy="24" r="12" fill="#2563EB"/>
+  <path d="M24 16 L29 26 L24 24 L19 26 Z" fill="#FFFFFF"/>
+</svg>
+`);
+
+const STOP_MARKER_SVGS: Record<StopStatus, string> = {
+  passed: encodeURIComponent(`
+    <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="14" cy="14" r="12" fill="rgba(16,185,129,0.2)"/>
+      <circle cx="14" cy="14" r="9" fill="#FFFFFF" stroke="rgba(15,23,42,0.08)" stroke-width="1"/>
+      <circle cx="14" cy="14" r="5" fill="#10b981"/>
+    </svg>
+  `),
+  next: encodeURIComponent(`
+    <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="14" cy="14" r="12" fill="rgba(24,71,186,0.2)"/>
+      <circle cx="14" cy="14" r="9" fill="#FFFFFF" stroke="rgba(15,23,42,0.08)" stroke-width="1"/>
+      <circle cx="14" cy="14" r="5" fill="#1847BA"/>
+    </svg>
+  `),
+  upcoming: encodeURIComponent(`
+    <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="14" cy="14" r="12" fill="rgba(245,158,11,0.22)"/>
+      <circle cx="14" cy="14" r="9" fill="#FFFFFF" stroke="rgba(15,23,42,0.08)" stroke-width="1"/>
+      <circle cx="14" cy="14" r="5" fill="#f59e0b"/>
+    </svg>
+  `),
+};
+
+const stopMarkerFill = (status?: StopStatus) => {
+  if (status === "passed") return "#10b981";
+  if (status === "next") return "#1847BA";
+  return "#f59e0b";
+};
+
+const stopMarkerHalo = (status?: StopStatus) => {
+  if (status === "passed") return "rgba(16,185,129,0.2)";
+  if (status === "next") return "rgba(24,71,186,0.2)";
+  return "rgba(245,158,11,0.22)";
+};
+
 // ---------------------------------------------------------------------------
 // Google Maps JS API loader (singleton promise)
 // ---------------------------------------------------------------------------
@@ -124,8 +213,25 @@ function SvgFallback({
         <SvgPolyline
           points={routePoints.map((p) => `${p.x},${p.y}`).join(" ")}
           fill="none"
-          stroke="#1d4ed8"
-          strokeWidth={7}
+          stroke={ROUTE_LINE_GLOW}
+          strokeWidth={12}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <SvgPolyline
+          points={routePoints.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill="none"
+          stroke={ROUTE_LINE_CORE}
+          strokeWidth={6}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <SvgPolyline
+          points={routePoints.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill="none"
+          stroke={ROUTE_LINE_ACCENT}
+          strokeWidth={1.8}
+          strokeDasharray="2 10"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
@@ -146,27 +252,48 @@ function SvgFallback({
           />
         )}
         {stopPoints.map((sp, i) => (
-          <Circle
-            key={`stop-${i}`}
-            cx={sp.x}
-            cy={sp.y}
-            r={6}
-            fill={
-              stops?.[i]?.status === "passed"
-                ? "#10b981"
-                : stops?.[i]?.status === "next"
-                  ? "#1847BA"
-                  : "#f59e0b"
-            }
-          />
+          <React.Fragment key={`stop-${i}`}>
+            <Circle
+              cx={sp.x}
+              cy={sp.y}
+              r={10}
+              fill={stopMarkerHalo(stops?.[i]?.status)}
+            />
+            <Circle
+              cx={sp.x}
+              cy={sp.y}
+              r={7}
+              fill="#FFFFFF"
+            />
+            <Circle
+              cx={sp.x}
+              cy={sp.y}
+              r={4}
+              fill={stopMarkerFill(stops?.[i]?.status)}
+            />
+          </React.Fragment>
         ))}
         {currentPoint && (
-          <Circle
-            cx={currentPoint.x}
-            cy={currentPoint.y}
-            r={8}
-            fill="#2563eb"
-          />
+          <>
+            <Circle
+              cx={currentPoint.x}
+              cy={currentPoint.y}
+              r={13}
+              fill="rgba(37,99,235,0.22)"
+            />
+            <Circle
+              cx={currentPoint.x}
+              cy={currentPoint.y}
+              r={10}
+              fill="#FFFFFF"
+            />
+            <Circle
+              cx={currentPoint.x}
+              cy={currentPoint.y}
+              r={7}
+              fill="#2563eb"
+            />
+          </>
         )}
       </Svg>
     </View>
@@ -209,7 +336,8 @@ export default function RouteMap({
   const [mapsReady, setMapsReady] = useState(false);
   const mapDivRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
-  const routePolylineRef = useRef<any>(null);
+  const routePolylineGlowRef = useRef<any>(null);
+  const routePolylineCoreRef = useRef<any>(null);
   const stopMarkersRef = useRef<any[]>([]);
   const endpointMarkersRef = useRef<{ start?: any; end?: any }>({});
   const busMarkerRef = useRef<any>(null);
@@ -232,27 +360,65 @@ export default function RouteMap({
     if (!mapRef.current) {
       mapRef.current = new g.maps.Map(mapDivRef.current, {
         center: path[Math.floor(path.length / 2)] ?? DEFAULT_FALLBACK_CENTER,
-        zoom: 12,
+        mapTypeId: "roadmap",
+        styles: STREET_MAP_STYLE,
+        zoom: 18,
         disableDefaultUI: true,
         zoomControl: true,
         gestureHandling: "greedy",
+        minZoom: 18,
+        maxZoom: 21,
       });
     }
 
+    // Force zoom immediately after any content changes
+    setTimeout(() => {
+      if (mapRef.current) {
+        mapRef.current.setZoom(18);
+      }
+    }, 0);
+
     // Replace the route polyline (drawn from the stored encodedPolyline — exact admin route)
-    if (routePolylineRef.current) {
-      routePolylineRef.current.setMap(null);
-      routePolylineRef.current = null;
+    if (routePolylineGlowRef.current) {
+      routePolylineGlowRef.current.setMap(null);
+      routePolylineGlowRef.current = null;
+    }
+    if (routePolylineCoreRef.current) {
+      routePolylineCoreRef.current.setMap(null);
+      routePolylineCoreRef.current = null;
     }
     if (path.length > 1) {
-      routePolylineRef.current = new g.maps.Polyline({
+      routePolylineGlowRef.current = new g.maps.Polyline({
         path,
         geodesic: true,
-        strokeColor: "#1a73e8",
-        strokeOpacity: 1.0,
-        strokeWeight: 4,
+        strokeColor: ROUTE_LINE_GLOW,
+        strokeOpacity: 1,
+        strokeWeight: 11,
+        zIndex: 20,
       });
-      routePolylineRef.current.setMap(mapRef.current);
+      routePolylineGlowRef.current.setMap(mapRef.current);
+
+      routePolylineCoreRef.current = new g.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: ROUTE_LINE_CORE,
+        strokeOpacity: 1,
+        strokeWeight: 5,
+        zIndex: 21,
+        icons: [
+          {
+            icon: {
+              path: "M 0,-1 0,1",
+              strokeColor: ROUTE_LINE_ACCENT,
+              strokeOpacity: 1,
+              scale: 2,
+            },
+            offset: "0",
+            repeat: "14px",
+          },
+        ],
+      });
+      routePolylineCoreRef.current.setMap(mapRef.current);
     }
 
     // Start/end markers
@@ -292,36 +458,36 @@ export default function RouteMap({
     // Ordered stop markers
     stopMarkersRef.current.forEach((marker) => marker.setMap(null));
     stopMarkersRef.current = (stops ?? []).map((stop, index) => {
-      const fillColor =
+      const markerSvg =
         stop.status === "passed"
-          ? "#10b981"
+          ? STOP_MARKER_SVGS.passed
           : stop.status === "next"
-            ? "#1847BA"
-            : "#f59e0b";
+            ? STOP_MARKER_SVGS.next
+            : STOP_MARKER_SVGS.upcoming;
 
       return new g.maps.Marker({
         position: { lat: stop.latitude, lng: stop.longitude },
         map: mapRef.current,
         title: `${stop.sequenceOrder != null ? `${stop.sequenceOrder}. ` : ""}${stop.name ?? `Stop ${index + 1}`}`,
         icon: {
-          path: g.maps.SymbolPath.CIRCLE,
-          scale: 6,
-          fillColor,
-          fillOpacity: 1,
-          strokeColor: "#ffffff",
-          strokeWeight: 2,
+          url: `data:image/svg+xml;charset=UTF-8,${markerSvg}`,
+          scaledSize: new g.maps.Size(28, 28),
+          anchor: new g.maps.Point(14, 14),
         },
       });
     });
 
-    // Fit the viewport to the full route
+    // Center on route without aggressive zoom-out from fitBounds
     if (path.length > 0) {
-      const bounds = new g.maps.LatLngBounds();
-      path.forEach((p: LatLng) => bounds.extend(p));
-      mapRef.current.fitBounds(bounds);
+      const centerPoint = path[Math.floor(path.length / 2)];
+      if (centerPoint) {
+        mapRef.current.setCenter(centerPoint);
+      }
+      // Preserve zoom 18 - don't use fitBounds as it zooms out
+      mapRef.current.setZoom(18);
     } else {
       mapRef.current.setCenter(DEFAULT_FALLBACK_CENTER);
-      mapRef.current.setZoom(12);
+      mapRef.current.setZoom(18);
     }
   }, [mapsReady, path, stops]);
 
@@ -345,13 +511,11 @@ export default function RouteMap({
         map: mapRef.current,
         title: "Bus",
         icon: {
-          path: g.maps.SymbolPath.CIRCLE,
-          scale: 10,
-          fillColor: "#1a73e8",
-          fillOpacity: 1,
-          strokeColor: "#ffffff",
-          strokeWeight: 2,
+          url: `data:image/svg+xml;charset=UTF-8,${LIVE_BUS_MARKER_SVG}`,
+          scaledSize: new g.maps.Size(48, 48),
+          anchor: new g.maps.Point(24, 24),
         },
+        zIndex: 999,
       });
     }
   }, [mapsReady, currentLocation]);

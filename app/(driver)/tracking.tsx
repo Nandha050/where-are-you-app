@@ -1,8 +1,7 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
-import * as Location from "expo-location";
 import { Redirect, router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -17,9 +16,8 @@ import {
   getActiveTrip,
   getDriverMe,
   getDriverMyRoute,
-  postMyLocation,
   startTrip,
-  stopTrip,
+  stopTrip
 } from "../../api/driver";
 import { ActiveTrip } from "../../api/types";
 import RouteMap from "../../components/RouteMap";
@@ -30,8 +28,7 @@ import {
   addSentryBreadcrumb,
   captureSentryException,
 } from "../../monitoring/sentry";
-import { backgroundLocationService } from "../../sockets/backgroundLocationTask";
-import socketService from "../../sockets/socketService";
+import { useDriverTracking } from "../../src/driver/hooks/useDriverTracking";
 
 type MapCoordinate = {
   latitude: number;
@@ -40,7 +37,6 @@ type MapCoordinate = {
 
 type DriverUIState = {
   trip: ActiveTrip | null;
-  connection: "connected" | "reconnecting" | "offline";
   sending: boolean;
   lastSentAt?: string;
 };
@@ -273,13 +269,16 @@ const buildPathFromAssignment = (
 export default function DriverTrackingScreen() {
   useSentryScreen("driver/tracking");
 
-  const { isAuthenticated, isHydrated, token } = useAuth();
+  const { isAuthenticated, isHydrated, token, user } = useAuth();
   const {
     getCurrentPosition,
     watchPosition,
     requestForegroundPermission,
     hasServicesEnabled,
   } = useLocation();
+
+  // New HTTP-based tracking (no WebSocket)
+  const driverTracking = useDriverTracking(API_BASE_URL);
 
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -300,15 +299,8 @@ export default function DriverTrackingScreen() {
   const [clock, setClock] = useState(Date.now());
   const [uiState, setUiState] = useState<DriverUIState>({
     trip: null,
-    connection: socketService.isConnected() ? "connected" : "offline",
     sending: false,
   });
-
-  const sendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const watchRef = useRef<Location.LocationSubscription | null>(null);
-  const latestLocationRef = useRef<CoordinateWithSpeed | null>(null);
-  const sendingRef = useRef(false);
-  const recoveryAttemptKeyRef = useRef<string | null>(null);
 
   const assignedBusId = assignment.bus?.id;
   const hasAssignment = Boolean(assignment.bus?.id && assignment.route?.id);
@@ -378,311 +370,13 @@ export default function DriverTrackingScreen() {
       });
       setError(
         err?.response?.data?.message ??
-          err?.message ??
-          "Failed to load tracking",
+        err?.message ??
+        "Failed to load tracking",
       );
     } finally {
       setLoading(false);
     }
   }, [isAuthenticated]);
-
-  const stopLocationFlow = useCallback(() => {
-    if (sendTimerRef.current) {
-      clearInterval(sendTimerRef.current);
-      sendTimerRef.current = null;
-    }
-
-    if (watchRef.current) {
-      watchRef.current.remove();
-      watchRef.current = null;
-    }
-
-    latestLocationRef.current = null;
-    sendingRef.current = false;
-    setUiState((previous) => ({
-      ...previous,
-      sending: false,
-    }));
-  }, []);
-
-  const sendCurrentLocation = useCallback(async () => {
-    if (!assignedBusId || sendingRef.current || !isTripActive) {
-      return;
-    }
-
-    sendingRef.current = true;
-    setUiState((previous) => ({
-      ...previous,
-      sending: true,
-    }));
-
-    let location = latestLocationRef.current;
-
-    if (!location) {
-      try {
-        const current = await getCurrentPosition(
-          "driver_tracking_send_current",
-          {
-            accuracy: Location.Accuracy.High,
-            mayShowUserSettingsDialog: true,
-          },
-        );
-
-        if (!isAccurateEnough(current.coords.accuracy ?? null)) {
-          sendingRef.current = false;
-          setUiState((previous) => ({
-            ...previous,
-            sending: false,
-          }));
-          setSendNote("Waiting for stronger GPS signal...");
-          return;
-        }
-
-        location = {
-          latitude: current.coords.latitude,
-          longitude: current.coords.longitude,
-          speed: current.coords.speed ?? null,
-        };
-
-        latestLocationRef.current = location;
-        setCurrentLocation({
-          latitude: location.latitude,
-          longitude: location.longitude,
-        });
-      } catch (locationErr) {
-        console.warn(
-          "[DriverTracking][sendCurrentLocation][getCurrentPosition]",
-          locationErr,
-        );
-        captureSentryException(locationErr, {
-          tags: {
-            area: "driver_tracking",
-            operation: "send_current_location_read",
-          },
-          level: "warning",
-        });
-        location = null;
-      }
-    }
-
-    if (!location) {
-      sendingRef.current = false;
-      setUiState((previous) => ({
-        ...previous,
-        sending: false,
-      }));
-      return;
-    }
-
-    const timestamp = new Date().toISOString();
-
-    try {
-      const result = await postMyLocation({
-        latitude: location.latitude,
-        longitude: location.longitude,
-        speed: location.speed ?? 0,
-        timestamp,
-      });
-
-      setUiState((previous) => ({
-        ...previous,
-        sending: false,
-        lastSentAt: timestamp,
-      }));
-
-      // Also emit location via socket for real-time updates (if connected)
-      if (socketService.isConnected()) {
-        try {
-          const socket = socketService.getSocket();
-          if (socket) {
-            socket.emit("driverLocationUpdate", {
-              latitude: location.latitude,
-              longitude: location.longitude,
-              speed: location.speed ?? 0,
-              timestamp,
-            });
-            console.log("[DriverTracking] Location emitted via socket");
-          }
-        } catch (socketErr) {
-          // Non-critical - HTTP POST already succeeded
-          console.warn("[DriverTracking] Socket emit failed:", socketErr);
-        }
-      }
-
-      setSendNote(
-        result.skipped
-          ? "Server throttled this update. Telemetry is still active."
-          : null,
-      );
-    } catch (err) {
-      if (isNoActiveTripError(err)) {
-        stopLocationFlow();
-        setUiState((previous) => ({
-          ...previous,
-          trip: null,
-          sending: false,
-        }));
-        setSendNote("No active trip found on server. Start trip again.");
-
-        addSentryBreadcrumb({
-          category: "driver_tracking",
-          message: "No active trip while posting location",
-          level: "warning",
-        });
-
-        return;
-      }
-
-      console.error(
-        "[DriverTracking][sendCurrentLocation][postMyLocation]",
-        err,
-      );
-      captureSentryException(err, {
-        tags: {
-          area: "driver_tracking",
-          operation: "send_current_location_post",
-        },
-      });
-      setUiState((previous) => ({
-        ...previous,
-        sending: false,
-      }));
-    } finally {
-      sendingRef.current = false;
-    }
-  }, [assignedBusId, getCurrentPosition, isTripActive, stopLocationFlow]);
-
-  const startLocationFlow = useCallback(async () => {
-    if (!isTripActive || !assignedBusId || sendTimerRef.current) {
-      return;
-    }
-
-    try {
-      const permission = await requestForegroundPermission(
-        "driver_tracking_start_flow",
-      );
-      if (!permission.granted) {
-        setSendNote("Location permission is required to send live telemetry.");
-        return;
-      }
-
-      const servicesEnabled = await hasServicesEnabled(
-        "driver_tracking_start_flow",
-      );
-      if (!servicesEnabled) {
-        setSendNote("Enable GPS/location services to continue telemetry.");
-        return;
-      }
-    } catch (permissionErr) {
-      console.error(
-        "[DriverTracking][startLocationFlow][permissions]",
-        permissionErr,
-      );
-      captureSentryException(permissionErr, {
-        tags: {
-          area: "driver_tracking",
-          operation: "start_location_permissions",
-        },
-      });
-      setSendNote("Unable to verify location permissions. Please retry.");
-      return;
-    }
-
-    socketService.connect(API_BASE_URL, token ?? undefined);
-
-    try {
-      const current = await getCurrentPosition("driver_tracking_initial_read", {
-        accuracy: Location.Accuracy.High,
-        mayShowUserSettingsDialog: true,
-      });
-
-      if (!isAccurateEnough(current.coords.accuracy ?? null)) {
-        setSendNote(
-          "GPS signal is weak. Move to open sky for accurate live location.",
-        );
-      }
-
-      latestLocationRef.current = {
-        latitude: current.coords.latitude,
-        longitude: current.coords.longitude,
-        speed: current.coords.speed ?? null,
-      };
-
-      setCurrentLocation({
-        latitude: current.coords.latitude,
-        longitude: current.coords.longitude,
-      });
-    } catch (initialReadErr) {
-      console.warn(
-        "[DriverTracking][startLocationFlow][initialLocation]",
-        initialReadErr,
-      );
-      captureSentryException(initialReadErr, {
-        tags: {
-          area: "driver_tracking",
-          operation: "start_location_initial_read",
-        },
-        level: "warning",
-      });
-      // Keep interval sender active even if initial read fails.
-    }
-
-    try {
-      watchRef.current = await watchPosition(
-        "driver_tracking_watch",
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 1000,
-          distanceInterval: 1,
-          mayShowUserSettingsDialog: true,
-        },
-        (position) => {
-          if (!isAccurateEnough(position.coords.accuracy ?? null)) {
-            return;
-          }
-
-          latestLocationRef.current = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            speed: position.coords.speed ?? null,
-          };
-
-          setCurrentLocation({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
-        },
-      );
-    } catch (watchErr) {
-      console.warn(
-        "[DriverTracking][startLocationFlow][watchPosition]",
-        watchErr,
-      );
-      captureSentryException(watchErr, {
-        tags: {
-          area: "driver_tracking",
-          operation: "start_location_watch",
-        },
-        level: "warning",
-      });
-      // Fallback to periodic getCurrentPosition in sender.
-    }
-
-    await sendCurrentLocation();
-
-    sendTimerRef.current = setInterval(() => {
-      void sendCurrentLocation();
-    }, 5000);
-  }, [
-    assignedBusId,
-    getCurrentPosition,
-    hasServicesEnabled,
-    isTripActive,
-    requestForegroundPermission,
-    sendCurrentLocation,
-    token,
-    watchPosition,
-  ]);
 
   const handleTripAction = useCallback(async () => {
     if (actionLoading) {
@@ -709,11 +403,9 @@ export default function DriverTrackingScreen() {
           ...previous,
           trip: latest,
         }));
-        stopLocationFlow();
 
-        // Stop background location tracking
-        await backgroundLocationService.stopBackgroundTracking();
-        console.log("[DriverTracking] Background location tracking stopped");
+        // Stop tracking
+        await driverTracking.stopTracking();
       } else {
         // Start trip
         if (!hasAssignment) {
@@ -732,29 +424,21 @@ export default function DriverTrackingScreen() {
           });
 
           const started = await startTrip();
+          const tripId = started?.id;
+
           setUiState((previous) => ({
             ...previous,
             trip: started ?? previous.trip,
           }));
 
-          // Start background location tracking
-          if (token && assignedBusId) {
-            const success =
-              await backgroundLocationService.startBackgroundTracking(
-                token,
-                String(assignedBusId),
-              );
-            if (success) {
-              console.log(
-                "[DriverTracking] Background location tracking started",
-              );
-              setSendNote("Background location tracking enabled");
-            } else {
-              console.warn(
-                "[DriverTracking] Failed to start background tracking",
-              );
-              setSendNote("Warning: Could not enable background tracking");
-            }
+          // Start background + foreground HTTP-based tracking with identifiers
+          if (tripId) {
+            await driverTracking.startTracking(
+              user?.id,
+              assignment.bus?.id,
+              tripId
+            );
+            setSendNote("Background location tracking enabled");
           }
         } catch (err) {
           if (isAlreadyActiveTripError(err)) {
@@ -764,13 +448,12 @@ export default function DriverTrackingScreen() {
               trip: active,
             }));
 
-            // Start background location tracking for existing trip
-            if (token && assignedBusId) {
-              await backgroundLocationService.startBackgroundTracking(
-                token,
-                String(assignedBusId),
-              );
-            }
+            // Resume tracking for existing trip with identifiers
+            await driverTracking.startTracking(
+              user?.id,
+              assignment.bus?.id,
+              active?.id
+            );
           } else {
             throw err;
           }
@@ -792,74 +475,21 @@ export default function DriverTrackingScreen() {
     }
   }, [
     actionLoading,
-    assignedBusId,
     assignment.bus?.id,
     assignment.route?.id,
+    driverTracking,
     hasAssignment,
     isTripActive,
-    stopLocationFlow,
-    token,
     uiState.trip?.id,
   ]);
 
   useEffect(() => {
     if (!isAuthenticated || !isTripActive || !token || !assignedBusId) {
-      recoveryAttemptKeyRef.current = null;
       return;
     }
 
-    const recoveryKey = `${uiState.trip?.id ?? "active"}:${String(assignedBusId)}`;
-    if (recoveryAttemptKeyRef.current === recoveryKey) {
-      return;
-    }
-
-    recoveryAttemptKeyRef.current = recoveryKey;
-    let cancelled = false;
-
-    const recoverBackgroundTracking = async () => {
-      try {
-        const wasEnabled = await backgroundLocationService.isTrackingEnabled();
-        if (!wasEnabled) {
-          return;
-        }
-
-        const recovered =
-          await backgroundLocationService.startBackgroundTracking(
-            token,
-            String(assignedBusId),
-          );
-
-        if (!recovered && !cancelled) {
-          setSendNote(
-            "Background tracking is not active. Grant background location permission.",
-          );
-        }
-      } catch (err) {
-        captureSentryException(err, {
-          tags: {
-            area: "driver_tracking",
-            operation: "recover_background_tracking",
-          },
-          level: "warning",
-        });
-      }
-    };
-
-    void recoverBackgroundTracking();
-
-    return () => {
-      cancelled = true;
-    };
+    // Tracking is already managed by the driverTracking hook
   }, [assignedBusId, isAuthenticated, isTripActive, token, uiState.trip?.id]);
-
-  // Cleanup background tracking when logging out
-  useFocusEffect(
-    useCallback(() => {
-      if (!isAuthenticated) {
-        void backgroundLocationService.stopBackgroundTracking();
-      }
-    }, [isAuthenticated]),
-  );
 
   useFocusEffect(
     useCallback(() => {
@@ -877,195 +507,35 @@ export default function DriverTrackingScreen() {
     }, []),
   );
 
-  useFocusEffect(
-    useCallback(() => {
-      if (!isAuthenticated || !assignedBusId) {
-        return;
-      }
-
-      socketService.connect(API_BASE_URL, token ?? undefined);
-
-      const onConnect = () => {
-        setUiState((previous) => ({
-          ...previous,
-          connection: "connected",
-        }));
-        socketService.joinBusRoom(String(assignedBusId));
-      };
-
-      const onDisconnect = () => {
-        setUiState((previous) => ({
-          ...previous,
-          connection: "offline",
-        }));
-      };
-
-      const onReconnectAttempt = () => {
-        setUiState((previous) => ({
-          ...previous,
-          connection: "reconnecting",
-        }));
-      };
-
-      const onBusLocationUpdate = (payload: unknown) => {
-        const event = payload as {
-          busId?: string | number;
-          bus?: { id?: string | number; _id?: string | number };
-          latitude?: number;
-          longitude?: number;
-          lat?: number;
-          lng?: number;
-          location?: {
-            latitude?: number;
-            longitude?: number;
-            lat?: number;
-            lng?: number;
-          };
-          trip?: { id?: string; status?: string };
-          tripStatus?: string;
-        };
-
-        const eventBusId = event.busId ?? event.bus?.id ?? event.bus?._id;
-        if (
-          eventBusId != null &&
-          String(eventBusId) !== String(assignedBusId)
-        ) {
-          return;
-        }
-
-        const latitude =
-          event.latitude ??
-          event.lat ??
-          event.location?.latitude ??
-          event.location?.lat;
-        const longitude =
-          event.longitude ??
-          event.lng ??
-          event.location?.longitude ??
-          event.location?.lng;
-
-        console.log("[WS][driver][busLocationUpdate]", {
-          assignedBusId: String(assignedBusId),
-          eventBusId: eventBusId == null ? null : String(eventBusId),
-          latitude,
-          longitude,
-          tripStatus: event.trip?.status ?? event.tripStatus ?? null,
-          receivedAt: new Date().toISOString(),
-        });
-
-        // Keep the driver marker on device GPS coordinates for accuracy.
-        // Socket coordinates can be delayed or filtered by backend.
-        void latitude;
-        void longitude;
-
-        const incomingStatus = toTripStatus(
-          event.trip?.status ?? event.tripStatus,
-        );
-        if (incomingStatus) {
-          setUiState((previous) => ({
-            ...previous,
-            trip: previous.trip
-              ? {
-                  ...previous.trip,
-                  status: incomingStatus,
-                  id: event.trip?.id ?? previous.trip.id,
-                }
-              : {
-                  id: event.trip?.id ?? "",
-                  status: incomingStatus,
-                  busId: String(assignedBusId),
-                },
-          }));
-        }
-      };
-
-      // Listen for driver location updates via socket (real-time location from this driver)
-      const onDriverLocationUpdate = (location: unknown) => {
-        const event = location as {
-          latitude?: number;
-          longitude?: number;
-          speed?: number;
-          timestamp?: string;
-        };
-
-        console.log("[WS][driver][locationUpdate]", {
-          latitude: event.latitude,
-          longitude: event.longitude,
-          speed: event.speed,
-          timestamp: event.timestamp,
-        });
-
-        // Update current location if received via socket
-        if (event.latitude != null && event.longitude != null) {
-          setCurrentLocation({
-            latitude: event.latitude,
-            longitude: event.longitude,
-          });
-        }
-      };
-
-      socketService.on("connect", onConnect);
-      socketService.on("disconnect", onDisconnect);
-      socketService.onReconnectAttempt(onReconnectAttempt);
-      socketService.on("busLocationUpdate", onBusLocationUpdate);
-      socketService.on("driverLocationUpdate", onDriverLocationUpdate);
-
-      if (socketService.isConnected()) {
-        onConnect();
-      }
-
-      return () => {
-        socketService.off("connect", onConnect);
-        socketService.off("disconnect", onDisconnect);
-        socketService.offReconnectAttempt(onReconnectAttempt);
-        socketService.off("busLocationUpdate", onBusLocationUpdate);
-        socketService.off("driverLocationUpdate", onDriverLocationUpdate);
-        socketService.leaveBusRoom(String(assignedBusId));
-      };
-    }, [assignedBusId, isAuthenticated, token]),
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!isAuthenticated || !isTripActive) {
-        stopLocationFlow();
-        return;
-      }
-
-      void startLocationFlow();
-
-      return () => {
-        stopLocationFlow();
-      };
-    }, [isAuthenticated, isTripActive, startLocationFlow, stopLocationFlow]),
-  );
-
   const tripStatusLabel = getTripStatusLabel(uiState.trip?.status);
 
-  const connectionLabel =
-    uiState.connection === "connected"
-      ? "Connected"
-      : uiState.connection === "reconnecting"
-        ? "Reconnecting"
-        : "Offline";
+  const syncStatus =
+    driverTracking.isTracking && driverTracking.isSyncing
+      ? "Syncing..."
+      : driverTracking.isTracking
+        ? "Tracking"
+        : "Idle";
 
   const actionLabel = isTripActive ? "Stop Trip" : "Start Trip";
   const actionDisabled = actionLoading || (!isTripActive && !hasAssignment);
 
-  const lastUpdatedSeconds = uiState.lastSentAt
+  const lastUpdatedSeconds = driverTracking.syncStats.lastSyncTime
     ? Math.max(
-        0,
-        Math.floor((clock - new Date(uiState.lastSentAt).getTime()) / 1000),
+      0,
+      Math.floor(
+        (clock - new Date(driverTracking.syncStats.lastSyncTime).getTime()) /
+        1000
       )
+    )
     : null;
 
-  const locationStatus = uiState.sending
-    ? "Sending..."
-    : lastUpdatedSeconds == null
-      ? isTripActive
-        ? "Waiting for first update"
-        : "Telemetry idle"
-      : `Last updated ${lastUpdatedSeconds} sec ago`;
+  const locationStatus = driverTracking.isTracking
+    ? driverTracking.isSyncing
+      ? "Syncing locations..."
+      : lastUpdatedSeconds == null
+        ? "Waiting for first sync"
+        : `Last synced ${lastUpdatedSeconds} sec ago`
+    : "Tracking idle";
 
   const stopsWithStatus = useMemo<StopWithStatus[]>(() => {
     if (!stopMarkers.length) {
@@ -1165,7 +635,7 @@ export default function DriverTrackingScreen() {
 
           <View className="rounded-full bg-white px-3 py-1.5">
             <Text className="text-xs font-bold text-slate-700">
-              {connectionLabel}
+              {syncStatus}
             </Text>
           </View>
         </View>
@@ -1271,23 +741,22 @@ export default function DriverTrackingScreen() {
 
           <View className="rounded-xl bg-blue-50 p-3">
             <Text className="text-xs font-semibold text-slate-500">
-              ETA to Destination
+              Queue Status
             </Text>
-            <Text className="mt-1 text-xl font-bold text-blue-700">
-              {formatEtaFromSeconds(
-                assignment.route?.etaToDestinationSeconds,
-              ) ??
-                assignment.route?.etaToDestinationText ??
-                "-"}
+            <Text className="mt-1 text-lg font-bold text-blue-700">
+              {driverTracking.queueStats.totalItems} locations queued
             </Text>
             <Text className="mt-1 text-sm font-semibold text-slate-600">
-              Remaining:{" "}
-              {formatDistanceFromMeters(
-                assignment.route?.distanceToDestinationMeters,
-              ) ??
-                assignment.route?.distanceToDestinationText ??
-                "-"}
+              Uploaded: {driverTracking.syncStats.totalItemsUploaded}
             </Text>
+            {driverTracking.queueStats.oldestItemAge !== null && (
+              <Text className="mt-0.5 text-xs text-slate-500">
+                Oldest: {Math.round(driverTracking.queueStats.oldestItemAge / 1000)}s ago
+              </Text>
+            )}
+            {driverTracking.error && (
+              <Text className="mt-1 text-xs text-red-600">{driverTracking.error}</Text>
+            )}
           </View>
         </View>
 
@@ -1304,13 +773,12 @@ export default function DriverTrackingScreen() {
                 >
                   <View className="mr-3 items-center" style={{ width: 18 }}>
                     <View
-                      className={`h-3.5 w-3.5 rounded-full ${
-                        stop.status === "passed"
-                          ? "bg-emerald-500"
-                          : stop.status === "next"
-                            ? "bg-blue-600"
-                            : "bg-amber-400"
-                      }`}
+                      className={`h-3.5 w-3.5 rounded-full ${stop.status === "passed"
+                        ? "bg-emerald-500"
+                        : stop.status === "next"
+                          ? "bg-blue-600"
+                          : "bg-amber-400"
+                        }`}
                     />
                     {index < stopsWithStatus.length - 1 ? (
                       <View className="mt-1 h-8 w-0.5 bg-slate-200" />
@@ -1327,13 +795,12 @@ export default function DriverTrackingScreen() {
                         (stop.name || "Stop")}
                     </Text>
                     <Text
-                      className={`mt-0.5 text-xs font-semibold ${
-                        stop.status === "passed"
-                          ? "text-emerald-600"
-                          : stop.status === "next"
-                            ? "text-blue-700"
-                            : "text-amber-700"
-                      }`}
+                      className={`mt-0.5 text-xs font-semibold ${stop.status === "passed"
+                        ? "text-emerald-600"
+                        : stop.status === "next"
+                          ? "text-blue-700"
+                          : "text-amber-700"
+                        }`}
                     >
                       {stop.status === "passed"
                         ? "Passed"
@@ -1342,25 +809,22 @@ export default function DriverTrackingScreen() {
                           : "Upcoming"}
                     </Text>
                     <Text className="mt-1 text-xs text-slate-600">
-                      {`From bus: ${
-                        stop.distanceFromCurrentText ??
+                      {`From bus: ${stop.distanceFromCurrentText ??
                         formatDistanceFromMeters(
                           stop.distanceFromCurrentMeters,
                         ) ??
                         "distance --"
-                      } • ${
-                        stop.etaFromCurrentText ??
+                        } • ${stop.etaFromCurrentText ??
                         formatEtaFromSeconds(stop.etaFromCurrentSeconds) ??
                         "ETA --"
-                      }`}
+                        }`}
                     </Text>
                     {stop.segmentDistanceText || stop.segmentEtaText ? (
                       <Text className="mt-0.5 text-[11px] text-slate-500">
-                        {`From previous: ${stop.segmentDistanceText ?? "-"}${
-                          stop.segmentDistanceText && stop.segmentEtaText
-                            ? " • "
-                            : ""
-                        }${stop.segmentEtaText ?? "-"}`}
+                        {`From previous: ${stop.segmentDistanceText ?? "-"}${stop.segmentDistanceText && stop.segmentEtaText
+                          ? " • "
+                          : ""
+                          }${stop.segmentEtaText ?? "-"}`}
                       </Text>
                     ) : null}
                   </View>
@@ -1371,13 +835,12 @@ export default function DriverTrackingScreen() {
         ) : null}
 
         <Pressable
-          className={`mt-5 items-center rounded-2xl py-4 ${
-            actionDisabled
-              ? "bg-slate-300"
-              : isTripActive
-                ? "bg-red-600"
-                : "bg-blue-700"
-          }`}
+          className={`mt-5 items-center rounded-2xl py-4 ${actionDisabled
+            ? "bg-slate-300"
+            : isTripActive
+              ? "bg-red-600"
+              : "bg-blue-700"
+            }`}
           disabled={actionDisabled}
           onPress={handleTripAction}
         >
