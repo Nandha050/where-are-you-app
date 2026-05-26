@@ -334,6 +334,14 @@ export default function DriverTrackingScreen() {
         }),
       ]);
 
+      console.log('📍 [refreshScreenData] ACTIVE TRIP FETCHED:', {
+        hasActiveTrip: !!activeTrip,
+        tripId: activeTrip?.id,
+        tripStatus: activeTrip?.status,
+        tripStartedAt: activeTrip?.startedAt,
+        tripEndedAt: activeTrip?.endedAt,
+      });
+
       let trackingAssignment: DriverMeSnapshot;
 
       if (
@@ -360,6 +368,28 @@ export default function DriverTrackingScreen() {
         ...previous,
         trip: activeTrip,
       }));
+
+      // AUTO-START TRACKING if trip is active
+      if (activeTrip && activeTrip.status === "STARTED" && trackingAssignment.bus?.id) {
+        const driverId = user?.id;
+        const busId = trackingAssignment.bus?.id;
+        const tripId = activeTrip.id;
+
+        console.log('🚀 [refreshScreenData] AUTO-STARTING TRACKING for existing trip:', {
+          driverId,
+          busId,
+          tripId,
+        });
+
+        if (driverId && busId && tripId) {
+          try {
+            await driverTracking.startTracking(driverId, busId, tripId);
+            console.log('✅ [refreshScreenData] AUTO-START SUCCESS');
+          } catch (trackingErr) {
+            console.error('❌ [refreshScreenData] AUTO-START FAILED:', trackingErr);
+          }
+        }
+      }
     } catch (err: any) {
       console.error("[DriverTracking][refreshScreenData]", err);
       captureSentryException(err, {
@@ -379,7 +409,10 @@ export default function DriverTrackingScreen() {
   }, [isAuthenticated]);
 
   const handleTripAction = useCallback(async () => {
+    console.log('🔵 [handleTripAction] CALLED', { isTripActive });
+
     if (actionLoading) {
+      console.log('🟡 [handleTripAction] ACTION ALREADY LOADING, RETURNING');
       return;
     }
 
@@ -408,7 +441,10 @@ export default function DriverTrackingScreen() {
         await driverTracking.stopTracking();
       } else {
         // Start trip
+        console.log('🟢 [handleTripAction] STARTING TRIP FLOW', { hasAssignment });
+
         if (!hasAssignment) {
+          console.error('❌ [handleTripAction] NO ASSIGNMENT, RETURNING');
           return;
         }
 
@@ -426,6 +462,12 @@ export default function DriverTrackingScreen() {
           const started = await startTrip();
           const tripId = started?.id;
 
+          console.log('✅ [Tracking] Trip started:', {
+            tripIdExists: !!tripId,
+            tripId: tripId || 'UNDEFINED',
+            started,
+          });
+
           setUiState((previous) => ({
             ...previous,
             trip: started ?? previous.trip,
@@ -433,15 +475,45 @@ export default function DriverTrackingScreen() {
 
           // Start background + foreground HTTP-based tracking with identifiers
           if (tripId) {
+            const userId = user?.id;
+            const busId = assignment.bus?.id;
+
+            console.log('🚀 [Tracking] IDENTIFIERS CHECK:', {
+              hasUserId: !!userId,
+              userId: userId || 'UNDEFINED',
+              hasBusId: !!busId,
+              busId: busId || 'UNDEFINED',
+              hasTripId: !!tripId,
+              tripId: tripId || 'UNDEFINED',
+            });
+
+            if (!userId || !busId || !tripId) {
+              console.error('❌ [Tracking] IDENTIFIERS INCOMPLETE - BLOCKING startTracking', {
+                userId: userId || 'MISSING',
+                busId: busId || 'MISSING',
+                tripId: tripId || 'MISSING',
+              });
+            }
+
+            console.log('🔴 [Tracking] ABOUT TO CALL startTracking WITH:', {
+              userId,
+              busId,
+              tripId,
+            });
+
             await driverTracking.startTracking(
-              user?.id,
-              assignment.bus?.id,
+              userId,
+              busId,
               tripId
             );
             setSendNote("Background location tracking enabled");
+          } else {
+            console.error('❌ [Tracking] BLOCKED: tripId is falsy!', { tripId });
           }
         } catch (err) {
+          console.error('❌ [handleTripAction] CATCH BLOCK TRIGGERED', { err });
           if (isAlreadyActiveTripError(err)) {
+            console.log('🟡 [handleTripAction] Already active trip detected, resuming...');
             const active = await getActiveTrip();
             setUiState((previous) => ({
               ...previous,
@@ -460,7 +532,7 @@ export default function DriverTrackingScreen() {
         }
       }
     } catch (err: any) {
-      console.error("[DriverTracking][handleTripAction]", err);
+      console.error("[DriverTracking][handleTripAction] OUTER CATCH", err);
       captureSentryException(err, {
         tags: {
           area: "driver_tracking",
@@ -471,6 +543,7 @@ export default function DriverTrackingScreen() {
         err?.response?.data?.message ?? err?.message ?? "Unable to update trip",
       );
     } finally {
+      console.log('ℹ️ [handleTripAction] FINALLY - Setting actionLoading to false');
       setActionLoading(false);
     }
   }, [

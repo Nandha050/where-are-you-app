@@ -199,3 +199,37 @@ export interface UserNotification {
   readAt?: string | null;
   isRead?: boolean;
 }
+
+/* ── Location Tracking Configuration ─────────────────────────────── */
+
+export interface TrackingConfig {
+  // Foreground: More frequent updates for real-time experience
+  foregroundTimeInterval: number; // milliseconds
+  foregroundDistanceInterval: number; // meters
+
+  // Background: Less frequent to preserve battery and respect OS limits
+  backgroundTimeInterval: number; // milliseconds
+  backgroundDistanceInterval: number; // meters
+
+  // Adaptation
+  enableAdaptiveTracking: boolean;
+  lowBatteryModeThreshold: number; // battery percentage
+
+  // Movement detection (for pausing when stationary)
+  stationary_threshold_meters: number;
+  stationary_threshold_duration: number; // milliseconds
+
+  // Retry policy (exponential backoff)
+  maxRetryCount: number;
+  initialRetryDelayMs: number;
+  maxRetryDelayMs: number;
+
+  // Queue management
+  maxQueueSize: number; // max items in memory
+  queueCleanupBatchSize: number; // clean in batches
+  maxQueueAgeMs: number; // milliseconds
+
+  // Rate limiting & deduplication
+  minTimeBetweenLocationsSec: number; // seconds
+  minDistanceBetweenLocationsM: number; // meters
+}

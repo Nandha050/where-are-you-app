@@ -99,12 +99,48 @@ export function useDriverTracking(apiBaseUrl: string) {
     const startTracking = useCallback(
         async (driverId?: string, busId?: string, tripId?: string) => {
             try {
+                console.log('🔴 [useDriverTracking.startTracking] CALLED WITH PARAMS:', {
+                    driverId: driverId || 'UNDEFINED',
+                    busId: busId || 'UNDEFINED',
+                    tripId: tripId || 'UNDEFINED',
+                });
+
+                logger.info('[useDriverTracking] startTracking called', {
+                    driverId: driverId || 'UNDEFINED',
+                    busId: busId || 'UNDEFINED',
+                    tripId: tripId || 'UNDEFINED',
+                });
+
                 setState((prev) => ({ ...prev, error: null }));
 
-                // Set driver identifiers if provided
+                // CRITICAL: Always set identifiers (even partial) with diagnostics
+                console.log('🟠 [useDriverTracking] About to call setDriverIdentifiers:', {
+                    driverId,
+                    busId,
+                    tripId,
+                });
+
+                logger.info('[useDriverTracking] Setting identifiers', {
+                    driverId: driverId || 'MISSING',
+                    busId: busId || 'MISSING',
+                    tripId: tripId || 'MISSING',
+                });
+
+                if (!driverId) logger.error('[useDriverTracking] ❌ driverId is missing!');
+                if (!busId) logger.error('[useDriverTracking] ❌ busId is missing!');
+                if (!tripId) logger.error('[useDriverTracking] ❌ tripId is missing!');
+
+                // Set identifiers unconditionally to enable sync
+                httpSyncManager.setDriverIdentifiers(driverId, busId, tripId);
+
+                console.log('🟢 [useDriverTracking] setDriverIdentifiers completed, calling managers');
+
                 if (driverId && busId && tripId) {
-                    httpSyncManager.setDriverIdentifiers(driverId, busId, tripId);
-                    logger.info('[useDriverTracking] Driver identifiers set', { driverId, busId, tripId });
+                    logger.info('[useDriverTracking] ✅ All identifiers available', {
+                        driverId,
+                        busId,
+                        tripId,
+                    });
                 }
 
                 await locationQueueManager.initialize();

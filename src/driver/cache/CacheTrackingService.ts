@@ -187,6 +187,12 @@ export class CacheTrackingService {
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
 
+            // ADD THIS: Extract response details from backend error
+            let responseBody = '';
+            if (axios.isAxiosError(error) && error.response?.data) {
+                responseBody = JSON.stringify(error.response.data);
+            }
+
             // Check for rate limiting
             if (
                 axios.isAxiosError(error) &&
@@ -198,10 +204,16 @@ export class CacheTrackingService {
                 });
             }
 
+            // UPDATED: Now logs the backend error message
             logger.error('[CacheTrackingService] Batch upload failed', {
                 tripId: payload.tripId,
                 error: message,
                 status: axios.isAxiosError(error) ? error.response?.status : 'unknown',
+                responseBody: responseBody || 'no response body',  // ← THIS IS THE KEY
+                payloadSummary: {
+                    locationCount: payload.locations.length,
+                    fields: Object.keys(payload),
+                },
             });
 
             return {

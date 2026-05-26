@@ -32,7 +32,7 @@ export function useCacheTracking() {
         },
     });
 
-    const updateIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    const updateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     /**
      * Update cache stats periodically

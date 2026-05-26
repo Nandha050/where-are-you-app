@@ -73,10 +73,27 @@ export class HTTPSyncManager {
      * Update driver identifiers
      */
     setDriverIdentifiers(driverId?: string, busId?: string, tripId?: string): void {
+        console.log('🔵 [HTTPSyncManager.setDriverIdentifiers] CALLED WITH:', {
+            driverId,
+            busId,
+            tripId,
+        });
+
         this.driverId = driverId || null;
         this.busId = busId || null;
         this.tripId = tripId || null;
-        logger.debug('[HTTPSyncManager] Driver identifiers updated', { driverId, busId, tripId });
+
+        console.log('🟢 [HTTPSyncManager.setDriverIdentifiers] SET TO:', {
+            driverId: this.driverId,
+            busId: this.busId,
+            tripId: this.tripId,
+        });
+
+        logger.debug('[HTTPSyncManager] Driver identifiers updated', {
+            driverId: this.driverId,
+            busId: this.busId,
+            tripId: this.tripId
+        });
     }
 
     /**
@@ -88,10 +105,20 @@ export class HTTPSyncManager {
             return;
         }
 
-        logger.info('[HTTPSyncManager] Starting periodic sync');
+        console.log('🟢 [HTTPSyncManager.start] STARTING SYNC CYCLE');
+        logger.info('[HTTPSyncManager] Starting periodic sync (every 15 seconds)');
         this.syncTimer = setInterval(() => {
+            console.log('⏰ [HTTPSyncManager] TICK - Sync cycle triggered', {
+                driverId: this.driverId,
+                busId: this.busId,
+                tripId: this.tripId,
+            });
+            logger.debug('[HTTPSyncManager] ⏰ TICK - Sync cycle triggered');
             void this.sync();
         }, SYNC_INTERVAL_MS);
+
+        // Do first sync immediately
+        void this.sync();
     }
 
     /**
@@ -125,14 +152,34 @@ export class HTTPSyncManager {
             this.isSyncing = true;
 
             const queueSize = locationQueueManager.size();
+
+            console.log('📊 [HTTPSyncManager.sync] STATUS CHECK:', {
+                queueSize,
+                hasAuth: !!this.authToken,
+                hasDriverId: !!this.driverId,
+                hasBusId: !!this.busId,
+                hasTripId: !!this.tripId,
+                allIdsPresent: !!(this.driverId && this.busId && this.tripId),
+            });
+
+            logger.debug('[HTTPSyncManager] Sync cycle', {
+                queueSize,
+                hasAuth: !!this.authToken,
+                hasDriverId: !!this.driverId,
+                hasBusId: !!this.busId,
+                hasTripId: !!this.tripId,
+            });
+
             if (queueSize === 0) {
                 if (this.backoffState.attempt > 0) {
                     this.backoffState.attempt = 0;
                     logger.info('[HTTPSyncManager] Backoff cleared');
                 }
+                logger.debug('[HTTPSyncManager] Queue empty, skipping sync');
                 return true;
             }
 
+            console.log('🟡 [HTTPSyncManager.sync] QUEUE HAS ITEMS, UPLOADING:', { queueSize });
             logger.debug('[HTTPSyncManager] Syncing', { queueSize });
 
             const success = await this.uploadBatchWithCoordinator();
@@ -184,18 +231,44 @@ export class HTTPSyncManager {
     private async uploadBatchWithCoordinator(): Promise<boolean> {
         try {
             if (!this.apiBaseUrl) {
+                logger.error('[HTTPSyncManager] ❌ API base URL not configured');
                 throw new Error('API base URL not configured');
             }
 
             if (!this.authToken) {
+                logger.error('[HTTPSyncManager] ❌ Authentication token not available');
                 throw new Error('Authentication token not available');
             }
 
+            // LOG IDENTIFIERS AT UPLOAD TIME
+            console.log('🔵 [HTTPSyncManager.uploadBatchWithCoordinator] CURRENT IDENTIFIERS:', {
+                driverId: this.driverId,
+                busId: this.busId,
+                tripId: this.tripId,
+                hasAll: !!(this.driverId && this.busId && this.tripId),
+            });
+
             if (!this.driverId || !this.busId || !this.tripId) {
-                logger.warn('[HTTPSyncManager] Missing identifiers', {
-                    driverId: !!this.driverId,
-                    busId: !!this.busId,
-                    tripId: !!this.tripId,
+                console.warn('⚠️ [HTTPSyncManager] Missing identifiers for batch upload:', {
+                    driverId: this.driverId || 'MISSING',
+                    busId: this.busId || 'MISSING',
+                    tripId: this.tripId || 'MISSING',
+                });
+            }
+
+            // CHECK: Log all identifiers with status
+            const missingIds = [];
+            if (!this.driverId) missingIds.push('driverId');
+            if (!this.busId) missingIds.push('busId');
+            if (!this.tripId) missingIds.push('tripId');
+
+            if (missingIds.length > 0) {
+                logger.error('[HTTPSyncManager] ❌ BLOCKING: Missing identifiers', {
+                    missing: missingIds.join(', '),
+                    driverId: this.driverId || 'UNDEFINED',
+                    busId: this.busId || 'UNDEFINED',
+                    tripId: this.tripId || 'UNDEFINED',
+                    queueSize: locationQueueManager.size(),
                 });
                 return false;
             }
@@ -208,9 +281,9 @@ export class HTTPSyncManager {
 
             // Coordinator handles: getting batch from queue, formatting, uploading, caching to Redis
             const result = await cacheCoordinatorService.coordinateBatchUpload(
-                this.tripId,
-                this.driverId,
-                this.busId,
+                this.tripId!,
+                this.driverId!,
+                this.busId!,
                 this.apiBaseUrl,
                 this.authToken,
                 MAX_BATCH_SIZE
@@ -313,6 +386,27 @@ export class HTTPSyncManager {
             lastSyncTime: null,
             nextRetryTime: null,
         };
+    }
+
+    /**
+     * Pause sync (when app backgrounded)
+     */
+    pause(): void {
+        if (this.syncTimer) {
+            clearInterval(this.syncTimer);
+            this.syncTimer = null;
+            logger.info('[HTTPSyncManager] Sync paused');
+        }
+    }
+
+    /**
+     * Resume sync (when app foregrounded)
+     */
+    resume(): void {
+        if (!this.syncTimer) {
+            this.start();
+            logger.info('[HTTPSyncManager] Sync resumed');
+        }
     }
 
     /**

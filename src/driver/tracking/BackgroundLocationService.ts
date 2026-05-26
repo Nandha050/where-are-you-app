@@ -159,10 +159,10 @@ export class BackgroundLocationService {
             const record: LocationRecord = {
                 latitude: location.coords.latitude,
                 longitude: location.coords.longitude,
-                speed: location.coords.speed,
-                heading: location.coords.heading,
-                accuracy: location.coords.accuracy,
-                altitude: location.coords.altitude,
+                speed: location.coords.speed || null,
+                heading: location.coords.heading ?? undefined,
+                accuracy: location.coords.accuracy ?? undefined,
+                altitude: location.coords.altitude ?? undefined,
                 timestamp: new Date(location.timestamp).toISOString(),
             };
 
@@ -192,9 +192,7 @@ export class BackgroundLocationService {
     private handleBackgroundLocation = async (
         taskData: TaskManager.TaskManagerTaskBody
     ): Promise<void> => {
-        const { locations } = taskData as {
-            locations: Location.LocationObject[];
-        };
+        const locations = (taskData as any).locations as Location.LocationObject[] | undefined;
 
         if (!locations || locations.length === 0) {
             return;

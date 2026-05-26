@@ -55,11 +55,11 @@ export class CacheMonitoring {
         }
 
         // Calculate success rate
+        const totalBatches = coordStats.totalBatchesSent;
+        const duplicates = coordStats.totalDuplicatesDetected;
         const successRate =
-            coordStats.totalBatchesSent > 0
-                ? ((coordStats.totalBatchesSent - coordStats.failedAttempts) /
-                    coordStats.totalBatchesSent) *
-                100
+            totalBatches > 0
+                ? ((totalBatches - duplicates) / totalBatches) * 100
                 : 100;
 
         if (successRate < 90) {

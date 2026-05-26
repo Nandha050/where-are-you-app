@@ -5,7 +5,7 @@
  * Tuned for production use on real-world networks and devices
  */
 
-import { TrackingConfig } from '../api/types';
+import { TrackingConfig } from '../../api/types';
 
 // ============================================================================
 // TASK NAMES & STORAGE KEYS
