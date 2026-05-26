@@ -1,17 +1,14 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import axios from "axios";
 import * as Location from "expo-location";
 import * as SecureStore from "expo-secure-store";
 import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
+import { locationQueueManager } from "../src/driver/queue/LocationQueueManager";
 import socketService from "./socketService";
 
 const LOCATION_TASK_NAME = "background-location-task";
 const LOCATION_TRACKING_ENABLED_KEY = "location_tracking_enabled";
 const ASSIGNED_BUS_ID_KEY = "assigned_bus_id";
 const AUTH_TOKEN_KEY = "auth_token";
-const LOCATION_QUEUE_KEY = "driver_location_queue";
-const LAST_HANDLED_LOCATION_KEY = "last_handled_driver_location";
 const MIN_DISTANCE_METERS = 5;
 const MIN_TIME_DELTA_MS = 5000;
 
@@ -21,14 +18,6 @@ type LocationPayload = {
   speed: number;
   timestamp: string;
 };
-
-type LastHandledLocation = {
-  latitude: number;
-  longitude: number;
-  timestamp: number;
-};
-
-let lastHandledCache: LastHandledLocation | null = null;
 
 const toRadians = (value: number): number => (value * Math.PI) / 180;
 
@@ -44,96 +33,16 @@ const distanceMeters = (
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRadians(lat1)) *
-      Math.cos(toRadians(lat2)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.cos(toRadians(lat2)) *
+    Math.sin(dLon / 2) *
+    Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 };
 
-const readQueue = async (): Promise<LocationPayload[]> => {
-  try {
-    const raw = await AsyncStorage.getItem(LOCATION_QUEUE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as LocationPayload[]) : [];
-  } catch {
-    return [];
-  }
-};
-
-const writeQueue = async (queue: LocationPayload[]): Promise<void> => {
-  try {
-    await AsyncStorage.setItem(LOCATION_QUEUE_KEY, JSON.stringify(queue));
-  } catch (err) {
-    console.warn(
-      "[backgroundLocationService] Failed to persist location queue",
-      err,
-    );
-  }
-};
-
-const enqueueLocation = async (payload: LocationPayload): Promise<void> => {
-  const queue = await readQueue();
-  queue.push(payload);
-  await writeQueue(queue.slice(-300));
-};
-
-const readLastHandled = async (): Promise<LastHandledLocation | null> => {
-  if (lastHandledCache) {
-    return lastHandledCache;
-  }
-
-  try {
-    const raw = await AsyncStorage.getItem(LAST_HANDLED_LOCATION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as LastHandledLocation;
-    if (
-      typeof parsed?.latitude === "number" &&
-      typeof parsed?.longitude === "number" &&
-      typeof parsed?.timestamp === "number"
-    ) {
-      lastHandledCache = parsed;
-      return parsed;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-};
-
-const writeLastHandled = async (value: LastHandledLocation): Promise<void> => {
-  lastHandledCache = value;
-  try {
-    await AsyncStorage.setItem(
-      LAST_HANDLED_LOCATION_KEY,
-      JSON.stringify(value),
-    );
-  } catch {
-    // Non-critical; filtering still works for current runtime via memory cache.
-  }
-};
-
-const shouldSkipLocation = async (
-  payload: LocationPayload,
-): Promise<boolean> => {
-  const lastHandled = await readLastHandled();
-  if (!lastHandled) {
-    return false;
-  }
-
-  const deltaMs = Math.abs(
-    new Date(payload.timestamp).getTime() - lastHandled.timestamp,
-  );
-  const movedMeters = distanceMeters(
-    lastHandled.latitude,
-    lastHandled.longitude,
-    payload.latitude,
-    payload.longitude,
-  );
-
-  return movedMeters < MIN_DISTANCE_METERS && deltaMs < MIN_TIME_DELTA_MS;
+const distanceThreshold = (lat1: number, lon1: number, lat2: number, lon2: number): boolean => {
+  const moved = distanceMeters(lat1, lon1, lat2, lon2);
+  return moved >= MIN_DISTANCE_METERS;
 };
 
 const emitSocketLocation = (payload: LocationPayload): void => {
@@ -153,42 +62,6 @@ const emitSocketLocation = (payload: LocationPayload): void => {
   }
 };
 
-const sendHttpLocation = async (
-  payload: LocationPayload,
-  token: string,
-  backendUrl: string,
-): Promise<void> => {
-  await axios.post(`${backendUrl}/api/tracking/me/location`, payload, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 8000,
-  });
-};
-
-const flushQueue = async (token: string, backendUrl: string): Promise<void> => {
-  const queue = await readQueue();
-  if (!queue.length) {
-    return;
-  }
-
-  const pending: LocationPayload[] = [];
-
-  for (let index = 0; index < queue.length; index += 1) {
-    const item = queue[index];
-    try {
-      await sendHttpLocation(item, token, backendUrl);
-      emitSocketLocation(item);
-    } catch {
-      pending.push(...queue.slice(index));
-      break;
-    }
-  }
-
-  await writeQueue(pending);
-};
-
 const sendLocationToBackend = async (
   payload: LocationPayload,
 ): Promise<boolean> => {
@@ -206,16 +79,37 @@ const sendLocationToBackend = async (
       return false;
     }
 
-    await sendHttpLocation(payload, token, backendUrl);
+    // ✅ NEW: Queue location for batch upload instead of posting individually
+    // The HTTPSyncManager will batch these locations every 15 seconds
+    // and send them via /api/tracking/batch for Redis caching
+    locationQueueManager.enqueue({
+      latitude: payload.latitude,
+      longitude: payload.longitude,
+      speed: payload.speed,
+      timestamp: payload.timestamp,
+      heading: 0,
+      accuracy: 0,
+      altitude: 0,
+    });
+
+    // Still emit via socket for real-time updates
     emitSocketLocation(payload);
-    await flushQueue(token, backendUrl);
+
+    console.log(
+      "[backgroundLocationService] Location queued for batch upload",
+      {
+        queueSize: locationQueueManager.size(),
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+      }
+    );
+
     return true;
   } catch (err: any) {
     console.warn("[backgroundLocationService] sendLocationToBackend failed", {
       status: err?.response?.status,
       message: err?.message,
     });
-    await enqueueLocation(payload);
     return false;
   }
 };
@@ -288,14 +182,8 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       timestamp: new Date(latestLocation.timestamp).toISOString(),
     };
 
-    if (!(await shouldSkipLocation(payload))) {
-      await writeLastHandled({
-        latitude: payload.latitude,
-        longitude: payload.longitude,
-        timestamp: new Date(payload.timestamp).getTime(),
-      });
-      await sendLocationToBackend(payload);
-    }
+    // ✅ Queue location for batch upload instead of posting individually
+    await sendLocationToBackend(payload);
   } catch (err) {
     console.error(`[${LOCATION_TASK_NAME}] Fatal error:`, err);
   }

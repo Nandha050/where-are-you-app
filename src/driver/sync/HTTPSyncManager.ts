@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
-import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../../core/logger/logger';
-import { LocationRecord, locationQueueManager } from '../queue/LocationQueueManager';
+import { cacheCoordinatorService } from '../cache/CacheCoordinatorService';
+import { locationQueueManager } from '../queue/LocationQueueManager';
 
 export interface SyncStats {
     successfulUploads: number;
@@ -135,29 +135,21 @@ export class HTTPSyncManager {
 
             logger.debug('[HTTPSyncManager] Syncing', { queueSize });
 
-            const batch = await locationQueueManager.getBatch(MAX_BATCH_SIZE);
-            if (batch.length === 0) {
-                return true;
-            }
-
-            const success = await this.uploadBatch(batch);
+            const success = await this.uploadBatchWithCoordinator();
 
             if (success) {
                 this.stats.successfulUploads++;
-                this.stats.totalItemsUploaded += batch.length;
                 this.stats.lastSyncTime = new Date().toISOString();
                 this.backoffState.attempt = 0;
                 this.backoffState.nextRetryMs = 0;
 
-                logger.info('[HTTPSyncManager] Batch uploaded', {
-                    itemCount: batch.length,
+                logger.info('[HTTPSyncManager] Batch uploaded successfully', {
                     queueRemaining: locationQueueManager.size(),
                 });
 
                 return true;
             } else {
-                // Upload failed, re-push and apply backoff
-                await locationQueueManager.rePushBatch(batch);
+                // Upload failed
                 this.applyBackoff();
                 this.stats.failedAttempts++;
 
@@ -186,19 +178,10 @@ export class HTTPSyncManager {
     }
 
     /**
-     * Upload batch to backend
-     * 
-     * Request body:
-     * {
-     *   tripId: string,
-     *   driverId: string,
-     *   busId: string,
-     *   batchTimestamp: ISO string,
-     *   nonce: UUID (for replay attack prevention),
-     *   locations: [...]
-     * }
+     * Upload batch with cache coordinator
+     * Coordinator handles: queue management, batch formatting, Redis caching
      */
-    private async uploadBatch(batch: LocationRecord[]): Promise<boolean> {
+    private async uploadBatchWithCoordinator(): Promise<boolean> {
         try {
             if (!this.apiBaseUrl) {
                 throw new Error('API base URL not configured');
@@ -214,92 +197,76 @@ export class HTTPSyncManager {
                     busId: !!this.busId,
                     tripId: !!this.tripId,
                 });
-                // Return false to trigger retry - identifiers might be loaded soon
                 return false;
             }
 
-            // Generate nonce for replay attack prevention
-            const nonce = uuidv4();
-
-            const payload = {
+            logger.debug('[HTTPSyncManager] Using cache coordinator for batch upload', {
                 tripId: this.tripId,
                 driverId: this.driverId,
                 busId: this.busId,
-                batchTimestamp: new Date().toISOString(),
-                nonce,
-                locations: batch.map((loc) => ({
-                    latitude: loc.latitude,
-                    longitude: loc.longitude,
-                    speed: loc.speed,
-                    heading: loc.heading,
-                    accuracy: loc.accuracy,
-                    altitude: loc.altitude,
-                    timestamp: loc.timestamp,
-                })),
-            };
-
-            logger.debug('[HTTPSyncManager] Uploading batch', {
-                nonce,
-                itemCount: batch.length,
-                tripId: this.tripId,
             });
 
-            const response = await axios.post(
-                `${this.apiBaseUrl}/api/tracking/batch`,
-                payload,
-                {
-                    timeout: 30000,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${this.authToken}`,
-                    },
-                }
+            // Coordinator handles: getting batch from queue, formatting, uploading, caching to Redis
+            const result = await cacheCoordinatorService.coordinateBatchUpload(
+                this.tripId,
+                this.driverId,
+                this.busId,
+                this.apiBaseUrl,
+                this.authToken,
+                MAX_BATCH_SIZE
             );
 
-            if (response.status === 200 || response.status === 201) {
-                const data = response.data as {
-                    success?: boolean;
-                    processedCount?: number;
-                    rateLimit?: { remaining: number; resetIn: number };
-                };
-
-                if (data.success === false) {
-                    logger.warn('[HTTPSyncManager] Batch rejected by server', {
-                        message: response.data.message,
-                    });
-                    return false;
-                }
-
-                logger.debug('[HTTPSyncManager] Batch uploaded successfully', {
-                    processedCount: data.processedCount,
-                    remaining: data.rateLimit?.remaining,
-                });
-
-                return true;
+            if (!result) {
+                logger.warn('[HTTPSyncManager] Coordinator returned no result (likely empty queue)');
+                return true; // No error - just no data to upload
             }
 
-            logger.warn('[HTTPSyncManager] Unexpected status', {
-                status: response.status,
+            // Update stats with cache result
+            this.stats.totalItemsUploaded += result.itemsProcessed;
+
+            logger.info('[HTTPSyncManager] Batch uploaded via coordinator', {
+                itemsProcessed: result.itemsProcessed,
+                itemsValid: result.itemsValid,
+                itemsDuplicate: result.itemsDuplicate,
+                rateLimitRemaining: result.rateLimitRemaining,
+                cacheUpdated: !!result.cacheKeys,
+                cacheKeys: result.cacheKeys,
             });
-            return false;
+
+            return true;
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 const axiosError = error as AxiosError;
                 const status = axiosError.response?.status;
                 const message = (axiosError.response?.data as Record<string, unknown>)?.message || axiosError.message;
 
-                logger.error('[HTTPSyncManager] Upload failed', {
+                logger.error('[HTTPSyncManager] Coordinator upload failed', {
                     status,
                     message,
                     code: axiosError.code,
                 });
 
-                // Don't retry on client errors (4xx)
-                if (status && status < 500) {
+                // Don't retry on auth errors
+                if (status === 401) {
+                    logger.error('[HTTPSyncManager] Authentication failed');
+                    return false;
+                }
+
+                // Don't retry on validation errors
+                if (status === 400 || status === 422) {
+                    logger.error('[HTTPSyncManager] Validation error', { message });
+                    return false;
+                }
+
+                // Rate limiting - will retry with backoff
+                if (status === 429) {
+                    logger.warn('[HTTPSyncManager] Rate limited');
                     return false;
                 }
             } else {
-                logger.error('[HTTPSyncManager] Upload error', { error });
+                logger.error('[HTTPSyncManager] Coordinator error', {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                });
             }
 
             return false;
