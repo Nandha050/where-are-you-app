@@ -16,13 +16,15 @@ export default function AuthIndex() {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !user) {
     return <Redirect href="/(driver)/login" />;
   }
 
-  return (
-    <Redirect
-      href={user?.role === "driver" ? "/(driver)/home" : "/(user)/home"}
-    />
-  );
+  // Default to driver if role is not set
+  const role = user.role || "driver";
+  const redirectPath = role === "driver" ? "/(driver)/home" : "/(user)/home";
+
+  console.log("[AuthIndex] Redirecting to", { role, path: redirectPath });
+
+  return <Redirect href={redirectPath} />;
 }

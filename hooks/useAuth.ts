@@ -28,7 +28,10 @@ export const useAuth = () => {
   const setError = useCallback((v: string | null) => setErrorRaw(v), []);
 
   useEffect(() => {
-    authStore.initializeAuth();
+    console.log("[useAuth] Initializing auth store");
+    authStore.initializeAuth().catch(err => {
+      console.error("[useAuth] Failed to initialize auth:", err);
+    });
   }, []);
 
   // Re-render whenever any relevant MobX observable changes

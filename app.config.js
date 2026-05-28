@@ -63,6 +63,7 @@ export default {
     plugins: [
       "expo-router",
       "expo-font",
+      "expo-web-browser",
       [
         "expo-splash-screen",
         {

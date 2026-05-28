@@ -80,6 +80,8 @@ Sentry.init({
   },
 });
 
+console.log("[App] Sentry initialized", { dsn: SENTRY_DSN });
+
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return <AppErrorBoundary error={error} retry={retry} />;
 }
@@ -104,7 +106,9 @@ export default Sentry.wrap(function RootLayout() {
       console.warn("[RootLayout] Failed to load Poppins fonts:", fontError);
     }
 
-    void SplashScreen.hideAsync();
+    void SplashScreen.hideAsync().catch(err => {
+      console.error("[RootLayout] Failed to hide splash screen:", err);
+    });
   }, [fontError, fontsLoaded]);
 
   // Sentry setup

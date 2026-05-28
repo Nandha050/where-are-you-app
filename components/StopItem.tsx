@@ -129,16 +129,6 @@ export const StopItem: React.FC<StopItemProps> = ({
                                         outputRange: [0.95, 1]
                                     })
                                 }],
-                            }
-                            : {}
-                    }
-                    className={`flex-1 py-2 ${isCurrent
-                        ? "rounded-xl px-4 py-3"
-                        : ""
-                        }`}
-                    style={
-                        isCurrent
-                            ? {
                                 backgroundColor: "#EEF4FF",
                                 shadowColor: "#2563EB",
                                 shadowOpacity: 0.08,
@@ -148,6 +138,10 @@ export const StopItem: React.FC<StopItemProps> = ({
                             }
                             : {}
                     }
+                    className={`flex-1 py-2 ${isCurrent
+                        ? "rounded-xl px-4 py-3"
+                        : ""
+                        }`}
                 >
                     <View className="flex-row items-start justify-between gap-3">
                         {/* Left: Stop name & subtitle */}
