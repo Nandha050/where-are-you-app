@@ -68,6 +68,17 @@ export class CacheCoordinatorService {
                 return null;
             }
 
+            // Log what's in this batch
+            logger.debug('[CacheCoordinator] Batch retrieved', {
+                tripId,
+                batchSize: batch.length,
+                locations: batch.map(loc => ({
+                    ts: loc.timestamp,
+                    lat: loc.latitude,
+                    lon: loc.longitude,
+                })),
+            });
+
             // Step 2: Format as cache payload
             const payload = cacheTrackingService.createBatchPayload(
                 batch,
@@ -89,6 +100,11 @@ export class CacheCoordinatorService {
                 logger.warn('[CacheCoordinator] Batch upload failed, re-queued', {
                     tripId,
                     batchSize: batch.length,
+                    locations: batch.map(loc => ({
+                        ts: loc.timestamp,
+                        lat: loc.latitude,
+                        lon: loc.longitude,
+                    })),
                 });
                 return null;
             }
