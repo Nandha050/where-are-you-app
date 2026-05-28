@@ -1,8 +1,10 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as SecureStore from "expo-secure-store";
 import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
 import { locationQueueManager } from "../src/driver/queue/LocationQueueManager";
+import { httpSyncManager } from "../src/driver/sync/HTTPSyncManager";
 import socketService from "./socketService";
 
 const LOCATION_TASK_NAME = "background-location-task";
@@ -11,6 +13,14 @@ const ASSIGNED_BUS_ID_KEY = "assigned_bus_id";
 const AUTH_TOKEN_KEY = "auth_token";
 const MIN_DISTANCE_METERS = 5;
 const MIN_TIME_DELTA_MS = 5000;
+
+// ✅ Storage keys for HTTPSyncManager restoration in background context
+const SYNC_MANAGER_STORAGE_KEYS = {
+  DRIVER_ID: 'httpSyncManager_driverId',
+  BUS_ID: 'httpSyncManager_busId',
+  TRIP_ID: 'httpSyncManager_tripId',
+  API_BASE_URL: 'httpSyncManager_apiBaseUrl',
+};
 
 type LocationPayload = {
   latitude: number;
@@ -90,6 +100,55 @@ const sendLocationToBackend = async (
       heading: 0,
       accuracy: 0,
       altitude: 0,
+    });
+
+    // ✅ CRITICAL: Trigger immediate sync in background context
+    // The setInterval in HTTPSyncManager won't run when app is backgrounded,
+    // so we must trigger sync manually from the background task
+    const queueSize = locationQueueManager.size();
+    console.log("[backgroundLocationService] Queued location, triggering sync", {
+      queueSize,
+      lat: payload.latitude,
+      lng: payload.longitude,
+    });
+
+    // ✅ Restore identifiers from storage in background context
+    // This is critical because HTTPSyncManager's in-memory state is lost when backgrounded
+    try {
+      const [driverId, busId, tripId, apiBaseUrl] = await Promise.all([
+        AsyncStorage.getItem(SYNC_MANAGER_STORAGE_KEYS.DRIVER_ID),
+        AsyncStorage.getItem(SYNC_MANAGER_STORAGE_KEYS.BUS_ID),
+        AsyncStorage.getItem(SYNC_MANAGER_STORAGE_KEYS.TRIP_ID),
+        AsyncStorage.getItem(SYNC_MANAGER_STORAGE_KEYS.API_BASE_URL),
+      ]);
+
+      if (driverId || busId || tripId) {
+        console.log("[backgroundLocationService] Restored identifiers from storage", {
+          driverId: !!driverId,
+          busId: !!busId,
+          tripId: !!tripId,
+        });
+
+        // Restore identifiers to HTTPSyncManager
+        httpSyncManager.setDriverIdentifiers(driverId || undefined, busId || undefined, tripId || undefined);
+      }
+
+      if (apiBaseUrl) {
+        httpSyncManager.initialize(apiBaseUrl, token);
+      }
+
+      // ✅ Restore auth token from secure storage
+      const restoredToken = await getStoredValue(AUTH_TOKEN_KEY);
+      if (restoredToken) {
+        httpSyncManager.setAuthToken(restoredToken);
+      }
+    } catch (err) {
+      console.warn("[backgroundLocationService] Failed to restore sync manager state:", err);
+    }
+
+    // Force sync without waiting (don't await - background tasks have time limits)
+    void httpSyncManager.forceSyncNow().catch((err) => {
+      console.warn("[backgroundLocationService] Background sync failed:", err);
     });
 
     // Still emit via socket for real-time updates

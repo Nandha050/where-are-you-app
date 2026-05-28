@@ -260,6 +260,66 @@ export class CacheTrackingService {
             totalBatchesSent: 0,
             totalLocationsProcessed: 0,
             lastBatchTimestamp: null,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             lastBatchSize: 0,
             cacheHitRate: 0,
             averageBatchLatency: 0,

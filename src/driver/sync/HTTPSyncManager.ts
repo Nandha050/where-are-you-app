@@ -1,4 +1,7 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios, { AxiosError } from 'axios';
+import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 import { logger } from '../../core/logger/logger';
 import { cacheCoordinatorService } from '../cache/CacheCoordinatorService';
 import { locationQueueManager } from '../queue/LocationQueueManager';
@@ -18,7 +21,15 @@ interface BackoffState {
 
 const BACKOFF_DELAYS = [1000, 2000, 4000, 8000, 16000, 32000, 64000]; // 7 attempts = ~2 minutes
 const MAX_BATCH_SIZE = 100;
-const SYNC_INTERVAL_MS = 15000; // 15 seconds
+let SYNC_INTERVAL_MS = 15000; // 15 seconds (can be updated for battery optimization)
+
+// ✅ Storage keys for persisting identifiers across background/foreground context
+const STORAGE_KEYS = {
+    DRIVER_ID: 'httpSyncManager_driverId',
+    BUS_ID: 'httpSyncManager_busId',
+    TRIP_ID: 'httpSyncManager_tripId',
+    API_BASE_URL: 'httpSyncManager_apiBaseUrl',
+};
 
 export class HTTPSyncManager {
     private static instance: HTTPSyncManager;
@@ -40,6 +51,7 @@ export class HTTPSyncManager {
     private driverId: string | null = null;
     private busId: string | null = null;
     private tripId: string | null = null;
+    private currentSyncIntervalMs = 15000; // ✅ Dynamic sync interval for battery optimization
 
     private constructor() { }
 
@@ -60,17 +72,57 @@ export class HTTPSyncManager {
         this.busId = busId || null;
         this.tripId = tripId || null;
         logger.info('[HTTPSyncManager] Initialized', { apiBaseUrl, hasDriverId: !!driverId, hasBusId: !!busId, hasTripId: !!tripId });
+
+        // ✅ Persist API URL for background context restoration
+        void this.persistApiBaseUrl(apiBaseUrl);
     }
 
     /**
-     * Update authentication token
+     * Persist API base URL to storage for background task access
+     */
+    private async persistApiBaseUrl(apiBaseUrl: string): Promise<void> {
+        try {
+            if (apiBaseUrl) {
+                await AsyncStorage.setItem(STORAGE_KEYS.API_BASE_URL, apiBaseUrl);
+                logger.debug('[HTTPSyncManager] API base URL persisted to storage');
+            }
+        } catch (error) {
+            logger.error('[HTTPSyncManager] Failed to persist API base URL', { error });
+        }
+    }
+
+    /**
+     * Update authentication token and persist for background context
      */
     setAuthToken(token: string | null): void {
         this.authToken = token;
+
+        // ✅ Persist token to SecureStore for background context restoration
+        if (token) {
+            void this.persistAuthToken(token);
+        }
     }
 
     /**
-     * Update driver identifiers
+     * Persist auth token to secure storage for background task access
+     */
+    private async persistAuthToken(token: string): Promise<void> {
+        try {
+            if (Platform.OS === 'web') {
+                if (typeof window !== 'undefined') {
+                    window.localStorage.setItem('httpSyncManager_authToken', token);
+                }
+                return;
+            }
+            await SecureStore.setItemAsync('httpSyncManager_authToken', token);
+            logger.debug('[HTTPSyncManager] Auth token persisted to secure storage');
+        } catch (error) {
+            logger.error('[HTTPSyncManager] Failed to persist auth token', { error });
+        }
+    }
+
+    /**
+     * Update driver identifiers and persist to storage for background context
      */
     setDriverIdentifiers(driverId?: string, busId?: string, tripId?: string): void {
         console.log('🔵 [HTTPSyncManager.setDriverIdentifiers] CALLED WITH:', {
@@ -94,6 +146,62 @@ export class HTTPSyncManager {
             busId: this.busId,
             tripId: this.tripId
         });
+
+        // ✅ CRITICAL: Persist identifiers to AsyncStorage for background context
+        // When background location task runs, it can restore these values
+        void this.persistIdentifiers(driverId, busId, tripId);
+    }
+
+    /**
+     * Persist identifiers to storage for background task access
+     */
+    private async persistIdentifiers(driverId?: string, busId?: string, tripId?: string): Promise<void> {
+        try {
+            if (driverId) await AsyncStorage.setItem(STORAGE_KEYS.DRIVER_ID, driverId);
+            if (busId) await AsyncStorage.setItem(STORAGE_KEYS.BUS_ID, busId);
+            if (tripId) await AsyncStorage.setItem(STORAGE_KEYS.TRIP_ID, tripId);
+
+            logger.debug('[HTTPSyncManager] Identifiers persisted to storage', {
+                driverId: !!driverId,
+                busId: !!busId,
+                tripId: !!tripId,
+            });
+        } catch (error) {
+            logger.error('[HTTPSyncManager] Failed to persist identifiers', { error });
+        }
+    }
+
+    /**
+     * Restore identifiers from storage (used in background context)
+     */
+    async restoreIdentifiersFromStorage(): Promise<void> {
+        try {
+            const [driverId, busId, tripId] = await Promise.all([
+                AsyncStorage.getItem(STORAGE_KEYS.DRIVER_ID),
+                AsyncStorage.getItem(STORAGE_KEYS.BUS_ID),
+                AsyncStorage.getItem(STORAGE_KEYS.TRIP_ID),
+            ]);
+
+            if (driverId || busId || tripId) {
+                this.driverId = driverId;
+                this.busId = busId;
+                this.tripId = tripId;
+
+                console.log('🔵 [HTTPSyncManager.restoreIdentifiersFromStorage] RESTORED:', {
+                    driverId: this.driverId,
+                    busId: this.busId,
+                    tripId: this.tripId,
+                });
+
+                logger.debug('[HTTPSyncManager] Identifiers restored from storage', {
+                    driverId: !!driverId,
+                    busId: !!busId,
+                    tripId: !!tripId,
+                });
+            }
+        } catch (error) {
+            logger.error('[HTTPSyncManager] Failed to restore identifiers from storage', { error });
+        }
     }
 
     /**
@@ -106,19 +214,55 @@ export class HTTPSyncManager {
         }
 
         console.log('🟢 [HTTPSyncManager.start] STARTING SYNC CYCLE');
-        logger.info('[HTTPSyncManager] Starting periodic sync (every 15 seconds)');
+        logger.info('[HTTPSyncManager] Starting periodic sync', {
+            intervalMs: this.currentSyncIntervalMs
+        });
         this.syncTimer = setInterval(() => {
             console.log('⏰ [HTTPSyncManager] TICK - Sync cycle triggered', {
                 driverId: this.driverId,
                 busId: this.busId,
                 tripId: this.tripId,
+                intervalMs: this.currentSyncIntervalMs,
             });
             logger.debug('[HTTPSyncManager] ⏰ TICK - Sync cycle triggered');
             void this.sync();
-        }, SYNC_INTERVAL_MS);
+        }, this.currentSyncIntervalMs);
 
         // Do first sync immediately
         void this.sync();
+    }
+
+    /**
+     * ✅ Update sync interval (e.g., for battery optimization)
+     */
+    updateSyncInterval(intervalMs: number): void {
+        if (intervalMs === this.currentSyncIntervalMs) {
+            return; // No change
+        }
+
+        const oldInterval = this.currentSyncIntervalMs;
+        this.currentSyncIntervalMs = intervalMs;
+
+        logger.info('[HTTPSyncManager] Sync interval updated', {
+            oldInterval,
+            newInterval: intervalMs,
+            reason: intervalMs > 15000 ? 'low battery' : 'battery recovered',
+        });
+
+        // Restart timer with new interval if running
+        if (this.syncTimer) {
+            clearInterval(this.syncTimer);
+            this.syncTimer = setInterval(() => {
+                console.log('⏰ [HTTPSyncManager] TICK - Sync cycle triggered', {
+                    driverId: this.driverId,
+                    busId: this.busId,
+                    tripId: this.tripId,
+                    intervalMs: this.currentSyncIntervalMs,
+                });
+                logger.debug('[HTTPSyncManager] ⏰ TICK - Sync cycle triggered');
+                void this.sync();
+            }, this.currentSyncIntervalMs);
+        }
     }
 
     /**
