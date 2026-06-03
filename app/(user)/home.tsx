@@ -21,6 +21,7 @@ import { PremiumBottomSheet, type TimelineStop } from "../../components/PremiumB
 import RouteMap from "../../components/RouteMap";
 import { useAuth } from "../../hooks/useAuth";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
+import usePassengerTrackingData from "../../hooks/useTrackingData";
 import { captureSentryException } from "../../monitoring/sentry";
 
 type Coord = { latitude: number; longitude: number };
@@ -142,6 +143,7 @@ export default function UserHome() {
     const { isAuthenticated, isHydrated } = useAuth();
     const insets = useSafeAreaInsets();
     const { height: windowHeight } = useWindowDimensions();
+    const trackingData = usePassengerTrackingData();
 
     const [savedBuses, setSavedBuses] = useState<SavedBusCard[]>([]);
     const [loadingSaved, setLoadingSaved] = useState(true);
@@ -255,6 +257,133 @@ export default function UserHome() {
 
     const activeBus = savedBuses[0] ?? null;
 
+    const activeTripLive = useMemo<BusLiveStatus | null>(() => {
+        if (!trackingData.route && !trackingData.trip && !trackingData.bus) {
+            return null;
+        }
+
+        const orderedStops = [...(trackingData.stops ?? [])].sort((a, b) => a.sequenceOrder - b.sequenceOrder);
+        const currentIndex = trackingData.currentStopId
+            ? orderedStops.findIndex((stop) => stop.id === trackingData.currentStopId)
+            : -1;
+        const nextIndex = trackingData.nextStopId
+            ? orderedStops.findIndex((stop) => stop.id === trackingData.nextStopId)
+            : -1;
+
+        const routeEtaText = trackingData.route?.estimatedDurationSeconds != null
+            ? formatEtaLabel(null, trackingData.route.estimatedDurationSeconds)
+            : null;
+        const etaToDestinationText = trackingData.etaToDestinationText ?? routeEtaText;
+        const nextStop = trackingData.nextStopId
+            ? orderedStops.find((stop) => stop.id === trackingData.nextStopId)?.name ?? null
+            : trackingData.currentStopId
+                ? orderedStops.find((stop) => stop.id === trackingData.currentStopId)?.name ?? null
+                : orderedStops[0]?.name ?? null;
+
+        const mappedStops = orderedStops.map((stop, index) => {
+            const status =
+                currentIndex >= 0
+                    ? index < currentIndex
+                        ? "passed"
+                        : index === currentIndex
+                            ? "current"
+                            : "upcoming"
+                    : nextIndex >= 0
+                        ? index < nextIndex
+                            ? "passed"
+                            : index === nextIndex
+                                ? "current"
+                                : "upcoming"
+                        : index === 0
+                            ? "current"
+                            : "upcoming";
+
+            return {
+                id: stop.id,
+                name: stop.name,
+                lat: stop.latitude,
+                lng: stop.longitude,
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                sequenceOrder: stop.sequenceOrder,
+                radiusMeters: stop.radiusMeters ?? undefined,
+                status,
+            };
+        });
+
+        return {
+            busId: trackingData.bus?.id ?? "",
+            numberPlate: trackingData.bus?.numberPlate ?? "",
+            routeName: trackingData.route?.name ?? "Route",
+            routeId: trackingData.route?.id,
+            trip: trackingData.trip
+                ? {
+                    id: trackingData.trip.id,
+                    status: trackingData.trip.status,
+                }
+                : undefined,
+            encodedPolyline: trackingData.route?.encodedPolyline ?? "",
+            routeStartLat: trackingData.route?.startLat ?? null,
+            routeStartLng: trackingData.route?.startLng ?? null,
+            routeStartName: trackingData.route?.startName ?? null,
+            routeEndLat: trackingData.route?.endLat ?? null,
+            routeEndLng: trackingData.route?.endLng ?? null,
+            routeEndName: trackingData.route?.endName ?? null,
+            stops: mappedStops,
+            currentLat: trackingData.currentLocation?.latitude ?? null,
+            currentLng: trackingData.currentLocation?.longitude ?? null,
+            nextStop,
+            estimatedArrival: etaToDestinationText,
+            fleetStatus: trackingData.bus?.status ?? null,
+            tripStatus: trackingData.trip?.status ?? null,
+            status: trackingData.trip?.status ?? trackingData.bus?.status ?? null,
+            trackingStatus: trackingData.connectionStatus,
+            lastUpdated: trackingData.lastUpdatedAt,
+            totalDistanceMeters: trackingData.route?.totalDistanceMeters,
+            estimatedDurationSeconds: trackingData.route?.estimatedDurationSeconds,
+            totalDistanceText: undefined,
+            estimatedDurationText: routeEtaText ?? undefined,
+            etaToDestinationSeconds: trackingData.etaToDestinationSeconds ?? undefined,
+            etaToDestinationText: etaToDestinationText ?? undefined,
+            distanceToDestinationMeters: undefined,
+            distanceToDestinationText: undefined,
+            isActive: Boolean(trackingData.trip),
+        } as BusLiveStatus;
+    }, [trackingData]);
+
+    const liveData = useMemo<BusLiveStatus | null>(() => {
+        if (!activeTripLive && !live) {
+            return null;
+        }
+
+        if (!activeTripLive) {
+            return live;
+        }
+
+        return {
+            ...live,
+            ...activeTripLive,
+            currentLat: activeTripLive.currentLat ?? live?.currentLat ?? null,
+            currentLng: activeTripLive.currentLng ?? live?.currentLng ?? null,
+            currentLocation: undefined,
+            stops: activeTripLive.stops?.length ? activeTripLive.stops : live?.stops ?? [],
+            encodedPolyline: activeTripLive.encodedPolyline || live?.encodedPolyline || "",
+            etaToDestinationSeconds:
+                activeTripLive.etaToDestinationSeconds ?? live?.etaToDestinationSeconds,
+            etaToDestinationText:
+                activeTripLive.etaToDestinationText ?? live?.etaToDestinationText ?? undefined,
+            nextStop: activeTripLive.nextStop ?? live?.nextStop ?? null,
+            routeStartName: activeTripLive.routeStartName ?? live?.routeStartName ?? null,
+            routeEndName: activeTripLive.routeEndName ?? live?.routeEndName ?? null,
+            routeName: activeTripLive.routeName ?? live?.routeName ?? "Route",
+            lastUpdated: activeTripLive.lastUpdated ?? live?.lastUpdated,
+            trackingStatus: trackingData.connectionStatus,
+            tripStatus: trackingData.trip?.status ?? activeTripLive.tripStatus ?? live?.tripStatus ?? null,
+            status: trackingData.trip?.status ?? activeTripLive.status ?? live?.status ?? null,
+            isActive: Boolean(trackingData.trip),
+        } as BusLiveStatus;
+    }, [activeTripLive, live, trackingData.connectionStatus, trackingData.trip]);
+
     const loadLiveForActiveBus = useCallback(async () => {
         if (!activeBus?.busId) {
             setLive(null);
@@ -282,68 +411,10 @@ export default function UserHome() {
         }
     }, [activeBus?.busId]);
 
-    // Transform stops to TimelineStop format for premium sheet
     const timelineStops = useMemo<TimelineStop[]>(() => {
-        // Dummy data for demonstration and testing
-        const dummyStops: TimelineStop[] = [
-            {
-                id: "stop-1",
-                name: "Hitech City Metro Station",
-                status: "passed",
-                time: "9:45 AM",
-                eta: "9:45 AM",
-                helperText: "Completed",
-            },
-            {
-                id: "stop-2",
-                name: "Cyber Towers",
-                status: "passed",
-                time: "10:12 AM",
-                eta: "10:12 AM",
-                helperText: "Completed",
-            },
-            {
-                id: "stop-3",
-                name: "Tech Park Main Gate",
-                status: "current",
-                time: "10:28 AM",
-                eta: "10:28 AM",
-                helperText: "Arriving Now",
-            },
-            {
-                id: "stop-4",
-                name: "Innovation Hub",
-                status: "upcoming",
-                eta: "10:45 AM",
-                helperText: "3 min away",
-            },
-            {
-                id: "stop-5",
-                name: "Business District",
-                status: "upcoming",
-                eta: "11:02 AM",
-                helperText: "20 min away",
-            },
-            {
-                id: "stop-6",
-                name: "Downtown Station",
-                status: "upcoming",
-                eta: "11:25 AM",
-                helperText: "43 min away",
-            },
-            {
-                id: "stop-7",
-                name: "Central Park Stop",
-                status: "upcoming",
-                eta: "11:42 AM",
-                helperText: "60 min away",
-            },
-        ];
+        if (!liveData?.stops) return [];
 
-        // Use live API data if available, otherwise use dummy data
-        if (!live?.stops) return dummyStops;
-
-        return live.stops
+        return liveData.stops
             .map((stop, idx) => ({
                 id: stop.id || `stop-${idx}`,
                 name: stop.name || "Unknown Stop",
@@ -360,7 +431,7 @@ export default function UserHome() {
                 const order = { passed: 0, current: 1, upcoming: 2 };
                 return order[a.status] - order[b.status];
             });
-    }, [live?.stops]);
+    }, [liveData?.stops]);
 
     // Pan responder for sheet gestures
     const panResponder = useRef(
@@ -460,12 +531,12 @@ export default function UserHome() {
         return () => {
             clearInterval(timer);
         };
-    }, [activeBus?.busId, loadLiveForActiveBus]);
+    }, [activeBus?.busId, loadLiveForActiveBus, trackingData.hasActiveTrip]);
 
     const routeCoordinates = useMemo<Coord[]>(() => {
-        if (live?.encodedPolyline) {
+        if (liveData?.encodedPolyline) {
             try {
-                const decoded = polyline.decode(live.encodedPolyline) as [number, number][];
+                const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
                 const mapped = decoded.map(([latitude, longitude]) => ({ latitude, longitude }));
                 if (mapped.length > 1) {
                     return mapped;
@@ -478,15 +549,15 @@ export default function UserHome() {
         const points: Coord[] = [];
 
         const startCandidate = {
-            latitude: live?.routeStartLat ?? undefined,
-            longitude: live?.routeStartLng ?? undefined,
+            latitude: liveData?.routeStartLat ?? undefined,
+            longitude: liveData?.routeStartLng ?? undefined,
         };
 
         if (isFiniteCoord(startCandidate)) {
             points.push({ latitude: startCandidate.latitude, longitude: startCandidate.longitude });
         }
 
-        (live?.stops ?? [])
+        (liveData?.stops ?? [])
             .map(toStopCoord)
             .filter((stop): stop is NonNullable<ReturnType<typeof toStopCoord>> => Boolean(stop))
             .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER))
@@ -495,8 +566,8 @@ export default function UserHome() {
             });
 
         const endCandidate = {
-            latitude: live?.routeEndLat ?? undefined,
-            longitude: live?.routeEndLng ?? undefined,
+            latitude: liveData?.routeEndLat ?? undefined,
+            longitude: liveData?.routeEndLng ?? undefined,
         };
 
         if (isFiniteCoord(endCandidate)) {
@@ -513,41 +584,41 @@ export default function UserHome() {
                 Math.abs(prev.longitude - point.longitude) > 1e-6
             );
         });
-    }, [live]);
+    }, [liveData]);
 
     const mapStops = useMemo(() => {
-        return (live?.stops ?? [])
+        return (liveData?.stops ?? [])
             .map(toStopCoord)
             .filter((stop): stop is NonNullable<ReturnType<typeof toStopCoord>> => Boolean(stop))
             .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
-    }, [live?.stops]);
+    }, [liveData?.stops]);
 
     const currentLocation = useMemo(() => {
         const candidate = {
-            latitude: live?.currentLat ?? undefined,
-            longitude: live?.currentLng ?? undefined,
+            latitude: liveData?.currentLat ?? undefined,
+            longitude: liveData?.currentLng ?? undefined,
         };
         return isFiniteCoord(candidate)
             ? { latitude: candidate.latitude, longitude: candidate.longitude }
             : undefined;
-    }, [live?.currentLat, live?.currentLng]);
+    }, [liveData?.currentLat, liveData?.currentLng]);
 
     const topLocationLabel = useMemo(() => {
-        return live?.routeStartName?.trim() || activeBus?.nextStop || "Tech park";
-    }, [activeBus?.nextStop, live?.routeStartName]);
+        return liveData?.routeStartName?.trim() || activeBus?.nextStop || "-";
+    }, [activeBus?.nextStop, liveData?.routeStartName]);
 
     const nextStopTitle = useMemo(() => {
-        return live?.nextStop?.trim() || activeBus?.nextStop || "bvrit";
-    }, [activeBus?.nextStop, live?.nextStop]);
+        return liveData?.nextStop?.trim() || activeBus?.nextStop || "-";
+    }, [activeBus?.nextStop, liveData?.nextStop]);
 
     const etaLabel = useMemo(() => {
-        return formatEtaLabel(live?.estimatedArrival, live?.etaToDestinationSeconds);
-    }, [live?.estimatedArrival, live?.etaToDestinationSeconds]);
+        return formatEtaLabel(liveData?.estimatedArrival, liveData?.etaToDestinationSeconds);
+    }, [liveData?.estimatedArrival, liveData?.etaToDestinationSeconds]);
 
     const nextStopSubtitle = useMemo(() => {
-        const location = live?.routeEndName?.trim() || live?.routeName || activeBus?.routeName || "Sangareddy";
-        return `${location} • Upcoming`;
-    }, [activeBus?.routeName, live?.routeEndName, live?.routeName]);
+        const location = liveData?.routeEndName?.trim() || liveData?.routeName || activeBus?.routeName || "-";
+        return location === "-" ? "-" : `${location} • Upcoming`;
+    }, [activeBus?.routeName, liveData?.routeEndName, liveData?.routeName]);
 
     const pulseScale = pulse.interpolate({
         inputRange: [0, 1],
@@ -578,7 +649,7 @@ export default function UserHome() {
                     coordinates={routeCoordinates}
                     stops={mapStops}
                     currentLocation={currentLocation}
-                    encodedPolyline={live?.encodedPolyline}
+                    encodedPolyline={liveData?.encodedPolyline}
                 />
                 <View pointerEvents="none" className="absolute inset-0 bg-slate-100/20" />
             </View>
@@ -727,7 +798,7 @@ export default function UserHome() {
                 </Pressable>
             </View>
 
-            {(loadingSaved || loadingLive) && (
+            {(loadingSaved || loadingLive || trackingData.loading) && (
                 <View
                     pointerEvents="none"
                     className="absolute self-center flex-row items-center rounded-full border border-white/50 bg-white/85 px-3 py-2"
@@ -738,7 +809,7 @@ export default function UserHome() {
                 </View>
             )}
 
-            {!loadingSaved && savedBuses.length === 0 && (
+            {!loadingSaved && !trackingData.loading && !trackingData.hasActiveTrip && savedBuses.length === 0 && (
                 <View
                     className="absolute self-center flex-row items-center rounded-full border border-white/45 bg-slate-100/80 px-3 py-2"
                     style={{ top: insets.top + 96 }}
@@ -768,8 +839,8 @@ export default function UserHome() {
                     }}
                 >
                     <PremiumBottomSheet
-                        routeOrigin={live?.routeStartName || topLocationLabel}
-                        routeDestination={live?.routeEndName || nextStopSubtitle.split("•")[0] || "End"}
+                        routeOrigin={liveData?.routeStartName || topLocationLabel}
+                        routeDestination={liveData?.routeEndName || nextStopSubtitle.split("•")[0] || "End"}
                         stops={timelineStops}
                         expandedHeight={80}
                         onClose={closeSheet}

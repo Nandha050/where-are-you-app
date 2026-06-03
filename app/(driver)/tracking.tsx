@@ -589,6 +589,12 @@ export default function DriverTrackingScreen() {
         ? "Tracking"
         : "Idle";
 
+  const trackingBanner = driverTracking.isTracking
+    ? driverTracking.isSyncing
+      ? "Background tracking is active and syncing location updates."
+      : "Background tracking is active. The driver notification stays pinned while tracking runs."
+    : "Background tracking is idle.";
+
   const actionLabel = isTripActive ? "Stop Trip" : "Start Trip";
   const actionDisabled = actionLoading || (!isTripActive && !hasAssignment);
 
@@ -728,6 +734,24 @@ export default function DriverTrackingScreen() {
               size={28}
               color="#1d4ed8"
             />
+          </View>
+
+          <View
+            className={`mt-3 flex-row items-start gap-3 rounded-xl px-3 py-3 ${driverTracking.isTracking ? "bg-emerald-50" : "bg-slate-50"}`}
+          >
+            <MaterialCommunityIcons
+              name={driverTracking.isTracking ? "shield-check" : "shield-off"}
+              size={20}
+              color={driverTracking.isTracking ? "#059669" : "#64748b"}
+            />
+            <View className="flex-1">
+              <Text className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Background Tracking
+              </Text>
+              <Text className="mt-1 text-sm font-medium text-slate-800">
+                {trackingBanner}
+              </Text>
+            </View>
           </View>
 
           <Text className="mt-3 text-xs font-semibold uppercase tracking-wider text-slate-500">

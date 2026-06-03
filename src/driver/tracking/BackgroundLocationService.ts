@@ -1,15 +1,15 @@
 import * as Location from 'expo-location';
+import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { type AppStateStatus, Platform } from 'react-native';
+import { ANDROID_CONFIG } from '../../config/constants';
 import { logger } from '../../core/logger/logger';
 import { locationQueueManager, type LocationRecord } from '../queue/LocationQueueManager';
 import { httpSyncManager } from '../sync/HTTPSyncManager';
 
 const BACKGROUND_TASK_NAME = 'driver-background-location';
-const LOCATION_TRACKING_ENABLED_KEY = 'driver_location_tracking_enabled';
 
 // ✅ Battery optimization thresholds
-const LOW_BATTERY_THRESHOLD = 0.2; // 20%
 const CRITICAL_BATTERY_THRESHOLD = 0.1; // 10%
 
 export interface BackgroundTrackingConfig {
@@ -56,6 +56,14 @@ export class BackgroundLocationService {
             }
 
             if (Platform.OS === 'android') {
+                const notificationPermissions = await Notifications.getPermissionsAsync();
+                if (notificationPermissions.status !== 'granted') {
+                    const requestedPermissions = await Notifications.requestPermissionsAsync();
+                    if (requestedPermissions.status !== 'granted') {
+                        logger.warn('[BackgroundLocationService] Notification permission denied - foreground service notification may be limited');
+                    }
+                }
+
                 const background =
                     await Location.requestBackgroundPermissionsAsync();
                 if (!background.granted) {
@@ -81,9 +89,10 @@ export class BackgroundLocationService {
                 distanceInterval: config.minDistanceMeters,
                 showsBackgroundLocationIndicator: true,
                 foregroundService: {
-                    notificationTitle: 'Live Tracking',
-                    notificationBody: `Tracking active${this.isLowBattery ? ' (low battery)' : ''}`,
-                    notificationColor: '#007AFF',
+                    notificationTitle: ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.title,
+                    notificationBody: `${ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.body}${this.isLowBattery ? ' (low battery)' : ''}`,
+                    notificationColor: ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.color,
+                    killServiceOnDestroy: false,
                 },
             });
 

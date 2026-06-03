@@ -5,9 +5,15 @@ import {
   BusLiveStatus,
   BusSearchResult,
   DriverStop,
+  TrackingBus,
+  TrackingDriver,
+  TrackingRoute,
+  TrackingStop,
+  TrackingTrip,
   UserNotification,
   UserSubscription,
   UserSubscriptionRequest,
+  UserTrackingActiveTripResponse,
 } from "./types";
 
 const unwrap = <T>(data: T | { data?: T } | { result?: T }): T => {
@@ -424,6 +430,179 @@ const asObject = (value: unknown): Record<string, any> => {
   return {};
 };
 
+const toTrackingNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const toTrackingString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length) {
+        return trimmed;
+      }
+    }
+  }
+
+  return null;
+};
+
+const normalizeTrackingStop = (stop: any): TrackingStop | null => {
+  const latitude = toTrackingNumber(stop?.latitude ?? stop?.lat);
+  const longitude = toTrackingNumber(stop?.longitude ?? stop?.lng);
+
+  if (latitude == null || longitude == null) {
+    return null;
+  }
+
+  const id = toTrackingString(stop?.id, stop?._id);
+  const name = toTrackingString(stop?.name);
+
+  if (!id || !name) {
+    return null;
+  }
+
+  const sequenceOrder = toTrackingNumber(stop?.sequenceOrder ?? stop?.sequence) ?? 0;
+
+  return {
+    id,
+    name,
+    latitude,
+    longitude,
+    sequenceOrder,
+    radiusMeters:
+      toTrackingNumber(stop?.radiusMeters ?? stop?.radius) ?? null,
+  };
+};
+
+const normalizeTrackingRoute = (route: any): TrackingRoute | null => {
+  if (!route || typeof route !== "object") {
+    return null;
+  }
+
+  const id = toTrackingString(route?.id, route?._id);
+  const name = toTrackingString(route?.name);
+  const encodedPolyline = toTrackingString(route?.encodedPolyline) ?? "";
+
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    startName: toTrackingString(route?.startName, route?.sourceName, route?.originName),
+    endName: toTrackingString(route?.endName, route?.destinationName),
+    startLat: toTrackingNumber(route?.startLat ?? route?.start?.lat ?? route?.start?.latitude),
+    startLng: toTrackingNumber(route?.startLng ?? route?.start?.lng ?? route?.start?.longitude),
+    endLat: toTrackingNumber(route?.endLat ?? route?.end?.lat ?? route?.end?.latitude),
+    endLng: toTrackingNumber(route?.endLng ?? route?.end?.lng ?? route?.end?.longitude),
+    encodedPolyline,
+    totalDistanceMeters: toTrackingNumber(route?.totalDistanceMeters) ?? undefined,
+    estimatedDurationSeconds: toTrackingNumber(route?.estimatedDurationSeconds) ?? undefined,
+  };
+};
+
+const normalizeTrackingTrip = (trip: any): TrackingTrip | null => {
+  if (!trip || typeof trip !== "object") {
+    return null;
+  }
+
+  const id = toTrackingString(trip?.id, trip?._id);
+  const status = toTrackingString(trip?.status) ?? "PENDING";
+
+  if (!id) {
+    return null;
+  }
+
+  const latitude = toTrackingNumber(trip?.currentLocation?.latitude ?? trip?.currentLocation?.lat);
+  const longitude = toTrackingNumber(trip?.currentLocation?.longitude ?? trip?.currentLocation?.lng);
+
+  return {
+    id,
+    status,
+    startedAt: toTrackingString(trip?.startedAt) ?? null,
+    currentLocation:
+      latitude != null && longitude != null
+        ? { latitude, longitude }
+        : null,
+    updatedAt: toTrackingString(trip?.updatedAt, trip?.lastUpdated) ?? null,
+  };
+};
+
+const normalizeTrackingBus = (bus: any): TrackingBus | null => {
+  if (!bus || typeof bus !== "object") {
+    return null;
+  }
+
+  const id = toTrackingString(bus?.id, bus?._id);
+  const numberPlate = toTrackingString(bus?.numberPlate, bus?.plateNumber);
+
+  if (!id || !numberPlate) {
+    return null;
+  }
+
+  return {
+    id,
+    numberPlate,
+    status: toTrackingString(bus?.status, bus?.fleetStatus, bus?.trackingStatus) ?? null,
+  };
+};
+
+const normalizeTrackingDriver = (driver: any): TrackingDriver | null => {
+  if (!driver || typeof driver !== "object") {
+    return null;
+  }
+
+  const id = toTrackingString(driver?.id, driver?._id);
+  const name = toTrackingString(driver?.name, driver?.fullName);
+
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    phone: toTrackingString(driver?.phone, driver?.phoneNumber) ?? null,
+  };
+};
+
+const normalizeTrackingResponse = (payload: any): UserTrackingActiveTripResponse => {
+  const data = asObject(payload?.data ?? payload?.result ?? payload);
+  const route = normalizeTrackingRoute(data?.route ?? payload?.route);
+  const stopsSource = Array.isArray(data?.stops)
+    ? data.stops
+    : Array.isArray(payload?.stops)
+      ? payload.stops
+      : [];
+  const stops = stopsSource
+    .map((stop: any) => normalizeTrackingStop(stop))
+    .filter((stop: TrackingStop | null): stop is TrackingStop => Boolean(stop))
+    .sort((a: TrackingStop, b: TrackingStop) => a.sequenceOrder - b.sequenceOrder);
+
+  return {
+    success: Boolean(payload?.success ?? data?.success ?? true),
+    message: toTrackingString(payload?.message, data?.message) ?? undefined,
+    data: {
+      route,
+      stops: stops.length ? stops : null,
+      trip: normalizeTrackingTrip(data?.trip ?? payload?.trip),
+      bus: normalizeTrackingBus(data?.bus ?? payload?.bus),
+      driver: normalizeTrackingDriver(data?.driver ?? payload?.driver),
+    },
+  };
+};
+
 const withApiGuard = async <T>(
   scope: string,
   handler: () => Promise<T>,
@@ -492,6 +671,19 @@ export const getUserBusLive = async (busId: string) => {
     const raw = safeResponse.data as any;
     const payload = unwrap<any>(raw);
     return normalizeLive(payload);
+  });
+};
+
+export const getUserActiveTrip = async () => {
+  return withApiGuard("getUserActiveTrip", async () => {
+    const response = await apiClient.get<UserTrackingActiveTripResponse | { data?: UserTrackingActiveTripResponse }>(
+      "/api/user/tracking/active-trip",
+    );
+    const safeResponse = assertAxiosSuccess(response, "getUserActiveTrip");
+    const raw = safeResponse.data as any;
+    const payload = unwrap<any>(raw);
+
+    return normalizeTrackingResponse(payload);
   });
 };
 

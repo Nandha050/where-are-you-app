@@ -1,7 +1,7 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
-import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { router } from "expo-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   LayoutAnimation,
@@ -15,7 +15,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { BusLiveStatus, DriverStop } from "../../api/types";
 import {
   createUserSubscription,
-  getUserBusLive,
   getUserSubscriptions,
 } from "../../api/user";
 import { BottomSheet, type BottomSheetState } from "../../components/BottomSheet";
@@ -23,8 +22,8 @@ import { BottomSheetContent } from "../../components/BottomSheetContent";
 import RouteMap from "../../components/RouteMap";
 import type { TimelineStop } from "../../components/StopsTimeline";
 import { useLocation } from "../../hooks/useLocation";
-import useRouteTracking from "../../hooks/useRouteTracking";
 import { useSentryScreen } from "../../hooks/useSentryScreen";
+import useTrackingData from "../../hooks/useTrackingData";
 import {
   addSentryBreadcrumb,
   captureSentryException,
@@ -125,7 +124,7 @@ const buildFallbackPath = (start: Coord | null, orderedStops: OrderedStop[], end
   return deduped;
 };
 
-const formatEtaFromSeconds = (seconds?: number): string | null => {
+const formatEtaFromSeconds = (seconds?: number | null): string | null => {
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
   if (seconds < 60) return "<1 min";
   return `${Math.round(seconds / 60)} min`;
@@ -169,157 +168,260 @@ export default function UserTrackingScreen() {
   }, []);
 
   const { ensureForegroundAccess, getCurrentPositionSafe } = useLocation();
-  const params = useLocalSearchParams<{
-    busId: string | string[];
-    routeId?: string | string[];
-    plate?: string;
-    route?: string;
-  }>();
-
-  const busId = Array.isArray(params.busId) ? params.busId[0] : params.busId;
-  const routeIdParam = Array.isArray(params.routeId) ? params.routeId[0] : params.routeId;
-
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState<BusLiveStatus | null>(null);
-  const [path, setPath] = useState<Coord[]>([]);
-  const [routeEncodedPolyline, setRouteEncodedPolyline] = useState("");
-  const [currentLocation, setCurrentLocation] = useState<Coord | null>(null);
+  const trackingData = useTrackingData();
   const [submittingSubscription, setSubmittingSubscription] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [sheetPosition, setSheetPosition] = useState<BottomSheetState>("half");
   const bottomSheetRef = useRef<{ snapToPosition: (state: BottomSheetState) => void }>(null);
   const previousCurrentStopIdRef = useRef<string | null>(null);
-  const lastAppliedRefreshNonceRef = useRef(0);
+
+  const loading = trackingData.loading;
+  const error = trackingData.error;
+  const currentLocation = trackingData.currentLocation;
+  const routeEncodedPolyline = trackingData.route?.encodedPolyline ?? "";
 
   const orderedStops = useMemo<OrderedStop[]>(() => {
-    return (live?.stops ?? [])
-      .map(toStopCoord)
-      .filter((stop): stop is OrderedStop => Boolean(stop))
+    return (trackingData.stops ?? [])
+      .map((stop) => ({
+        id: stop.id,
+        name: stop.name,
+        latitude: stop.latitude,
+        longitude: stop.longitude,
+        sequenceOrder: stop.sequenceOrder,
+      }))
       .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
-  }, [live?.stops]);
+  }, [trackingData.stops]);
 
-  const selectedRouteId = live?.routeId ?? routeIdParam ?? null;
-  const tracking = useRouteTracking(selectedRouteId);
+  const routeStart = trackingData.route?.startName ?? orderedStops[0]?.name ?? "-";
+  const routeEnd = trackingData.route?.endName ?? orderedStops[orderedStops.length - 1]?.name ?? "-";
 
-  const loadLiveSnapshot = useCallback(async (showLoader: boolean) => {
-    if (!busId) {
-      setLoading(false);
-      setError("Bus id is missing");
-      return false;
-    }
+  const path = useMemo<Coord[]>(() => {
+    const start = trackingData.route?.startLat != null && trackingData.route?.startLng != null
+      ? { latitude: trackingData.route.startLat, longitude: trackingData.route.startLng }
+      : null;
+    const end = trackingData.route?.endLat != null && trackingData.route?.endLng != null
+      ? { latitude: trackingData.route.endLat, longitude: trackingData.route.endLng }
+      : null;
 
-    if (showLoader) {
-      setLoading(true);
-    }
-
-    setError(null);
-    try {
-      const [liveData, subscriptions] = await Promise.all([
-        getUserBusLive(String(busId)),
-        getUserSubscriptions(),
-      ]);
-
-      setLive(liveData);
-      setIsSubscribed(subscriptions.some((subscription) => String(subscription.busId) === String(busId)));
-
-      const liveCoord = liveData.currentLat != null && liveData.currentLng != null
-        ? { latitude: liveData.currentLat, longitude: liveData.currentLng }
-        : null;
-
-      if (isValidCoord(liveCoord)) {
-        setCurrentLocation(liveCoord);
-      } else {
-        setCurrentLocation(null);
-      }
-
-      const sortedStops = (liveData.stops ?? [])
-        .map(toStopCoord)
-        .filter((stop): stop is OrderedStop => Boolean(stop))
-        .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
-
-      if (liveData.encodedPolyline) {
-        setRouteEncodedPolyline(liveData.encodedPolyline);
-        try {
-          const decoded = polyline.decode(liveData.encodedPolyline) as [number, number][];
-          setPath(decoded.map(([latitude, longitude]) => ({ latitude, longitude })));
-        } catch (polylineErr) {
-          console.warn("[UserTracking][decodePolyline]", { busId, error: polylineErr });
-          captureSentryException(polylineErr, {
-            tags: { area: "user_tracking", operation: "decode_polyline" },
-            extra: { busId },
-            level: "warning",
-          });
-          setRouteEncodedPolyline("");
-
-          const start = liveData.routeStartLat != null && liveData.routeStartLng != null
-            ? { latitude: liveData.routeStartLat, longitude: liveData.routeStartLng }
-            : null;
-          const end = liveData.routeEndLat != null && liveData.routeEndLng != null
-            ? { latitude: liveData.routeEndLat, longitude: liveData.routeEndLng }
-            : null;
-
-          setPath(buildFallbackPath(start, sortedStops, end));
+    if (routeEncodedPolyline) {
+      try {
+        const decoded = polyline.decode(routeEncodedPolyline) as [number, number][];
+        const points = decoded.map(([latitude, longitude]) => ({ latitude, longitude }));
+        if (points.length > 0) {
+          return points;
         }
-      } else {
-        setRouteEncodedPolyline("");
-        const start = liveData.routeStartLat != null && liveData.routeStartLng != null
-          ? { latitude: liveData.routeStartLat, longitude: liveData.routeStartLng }
-          : null;
-        const end = liveData.routeEndLat != null && liveData.routeEndLng != null
-          ? { latitude: liveData.routeEndLat, longitude: liveData.routeEndLng }
-          : null;
-        setPath(buildFallbackPath(start, sortedStops, end));
-      }
-
-      return true;
-    } catch (err: any) {
-      console.error("[UserTracking][load]", { busId, error: err });
-      captureSentryException(err, {
-        tags: { area: "user_tracking", operation: "load" },
-        extra: { busId },
-      });
-      setError(err?.response?.data?.message ?? err?.message ?? "Failed to load live bus");
-      return false;
-    } finally {
-      if (showLoader) {
-        setLoading(false);
+      } catch (polylineErr) {
+        console.warn("[UserTracking][decodePolyline]", { error: polylineErr });
+        captureSentryException(polylineErr, {
+          tags: { area: "user_tracking", operation: "decode_polyline" },
+          level: "warning",
+        });
       }
     }
-  }, [busId]);
 
-  useEffect(() => {
-    void loadLiveSnapshot(true);
-  }, [loadLiveSnapshot]);
+    return buildFallbackPath(start, orderedStops, end);
+  }, [orderedStops, routeEncodedPolyline, trackingData.route]);
 
-  useEffect(() => {
-    if (tracking.refreshSnapshotNonce <= lastAppliedRefreshNonceRef.current) {
-      return;
+  const live = useMemo<BusLiveStatus | null>(() => {
+    if (!trackingData.route && !trackingData.trip && !trackingData.bus) {
+      return null;
     }
 
-    lastAppliedRefreshNonceRef.current = tracking.refreshSnapshotNonce;
-    void loadLiveSnapshot(false);
-  }, [loadLiveSnapshot, tracking.refreshSnapshotNonce]);
+    const routeEtaText = trackingData.route
+      ? formatEtaFromSeconds(trackingData.route.estimatedDurationSeconds)
+      : null;
+    const etaToDestinationText =
+      trackingData.etaToDestinationText ??
+      formatEtaFromSeconds(trackingData.etaToDestinationSeconds) ??
+      routeEtaText;
 
-  useEffect(() => {
-    if (tracking.busLocation) {
-      setCurrentLocation({
-        latitude: tracking.busLocation.lat,
-        longitude: tracking.busLocation.lng,
-      });
+    return {
+      busId: trackingData.bus?.id ?? "",
+      numberPlate: trackingData.bus?.numberPlate ?? "",
+      routeName: trackingData.route?.name ?? "Route",
+      routeId: trackingData.route?.id,
+      trip: trackingData.trip
+        ? {
+          id: trackingData.trip.id,
+          status: trackingData.trip.status,
+        }
+        : undefined,
+      encodedPolyline: trackingData.route?.encodedPolyline ?? "",
+      routeStartLat: trackingData.route?.startLat ?? null,
+      routeStartLng: trackingData.route?.startLng ?? null,
+      routeStartName: trackingData.route?.startName ?? null,
+      routeEndLat: trackingData.route?.endLat ?? null,
+      routeEndLng: trackingData.route?.endLng ?? null,
+      routeEndName: trackingData.route?.endName ?? null,
+      stops: trackingData.stops
+        ? trackingData.stops.map((stop) => ({
+          id: stop.id,
+          name: stop.name,
+          lat: stop.latitude,
+          lng: stop.longitude,
+          latitude: stop.latitude,
+          longitude: stop.longitude,
+          sequenceOrder: stop.sequenceOrder,
+          radiusMeters: stop.radiusMeters ?? undefined,
+        }))
+        : [],
+      currentLat: trackingData.currentLocation?.latitude ?? null,
+      currentLng: trackingData.currentLocation?.longitude ?? null,
+      nextStop: orderedStops.find((stop) => stop.id === trackingData.nextStopId)?.name ?? null,
+      estimatedArrival: trackingData.etaToDestinationText ?? null,
+      fleetStatus: trackingData.bus?.status ?? null,
+      tripStatus: trackingData.trip?.status ?? null,
+      status: trackingData.trip?.status ?? trackingData.bus?.status ?? null,
+      trackingStatus: trackingData.connectionStatus,
+      lastUpdated: trackingData.lastUpdatedAt,
+      totalDistanceMeters: trackingData.route?.totalDistanceMeters,
+      estimatedDurationSeconds: trackingData.route?.estimatedDurationSeconds,
+      totalDistanceText: trackingData.route?.totalDistanceMeters != null
+        ? formatDistanceFromMeters(trackingData.route.totalDistanceMeters) ?? undefined
+        : undefined,
+      estimatedDurationText: trackingData.route?.estimatedDurationSeconds != null
+        ? formatEtaFromSeconds(trackingData.route.estimatedDurationSeconds) ?? undefined
+        : undefined,
+      etaToDestinationSeconds: trackingData.etaToDestinationSeconds ?? undefined,
+      etaToDestinationText: trackingData.etaToDestinationText ?? undefined,
+      distanceToDestinationMeters: undefined,
+      distanceToDestinationText: undefined,
+      isActive: Boolean(trackingData.trip),
+    } as BusLiveStatus;
+  }, [orderedStops, trackingData]);
+
+  const connectionLabel = trackingData.connectionStatus === "connected"
+    ? "Live"
+    : trackingData.connectionStatus === "reconnecting"
+      ? "Reconnecting"
+      : "Offline";
+
+  const freshnessLabel = trackingData.lastUpdatedAt
+    ? getFreshnessLabel(trackingData.lastUpdatedAt)
+    : "No recent update";
+
+  const tripStatusLabel = getTripStatusLabel(trackingData.trip?.status);
+  const trackingStatusLabel = connectionLabel;
+  const normalizedTripStatus = String(trackingData.trip?.status ?? "PENDING").trim().toUpperCase();
+  const tripStatusBadge = trackingData.connectionStatus !== "connected"
+    ? "OFFLINE"
+    : normalizedTripStatus.includes("STOPPED")
+      ? "STOPPED"
+      : normalizedTripStatus.includes("RUNNING") || normalizedTripStatus.includes("STARTED")
+        ? "RUNNING"
+        : normalizedTripStatus.includes("PENDING")
+          ? "PENDING"
+          : normalizedTripStatus.includes("COMPLETED")
+            ? "COMPLETED"
+            : normalizedTripStatus.includes("CANCEL")
+              ? "CANCELLED"
+              : normalizedTripStatus;
+
+  const stopsWithStatus = useMemo<StopWithStatus[]>(() => {
+    if (!orderedStops.length) {
+      return [];
     }
-  }, [tracking.busLocation]);
+
+    const currentIndex = trackingData.currentStopId
+      ? orderedStops.findIndex((stop) => stop.id === trackingData.currentStopId)
+      : -1;
+    const nextIndex = trackingData.nextStopId
+      ? orderedStops.findIndex((stop) => stop.id === trackingData.nextStopId)
+      : -1;
+
+    if (currentIndex >= 0) {
+      return orderedStops.map((stop, index) => ({
+        ...stop,
+        status: index < currentIndex ? "passed" : index === currentIndex ? "next" : "upcoming",
+      }));
+    }
+
+    if (nextIndex >= 0) {
+      return orderedStops.map((stop, index) => ({
+        ...stop,
+        status: index < nextIndex ? "passed" : index === nextIndex ? "next" : "upcoming",
+      }));
+    }
+
+    return orderedStops.map((stop, index) => ({
+      ...stop,
+      status: index === 0 ? "next" : "upcoming",
+    }));
+  }, [orderedStops, trackingData.currentStopId, trackingData.nextStopId]);
+
+  const timelineStopsForSheet = useMemo<TimelineStop[]>(() => {
+    return stopsWithStatus.map((stop, index) => {
+      const uiStatus: "passed" | "current" | "upcoming" =
+        stop.status === "next" ? "current" : stop.status;
+      return {
+        id: stop.id,
+        name: stop.name || `Stop ${index + 1}`,
+        status: uiStatus,
+        sequence: stop.sequenceOrder ?? index + 1,
+        leftSubLabel:
+          uiStatus === "passed"
+            ? "Passed"
+            : uiStatus === "current"
+              ? "Arriving Now"
+              : stop.etaFromCurrentText ?? "Upcoming",
+        rightPrimaryLabel:
+          uiStatus === "passed"
+            ? "Passed"
+            : uiStatus === "current"
+              ? "Now"
+              : formatEtaFromSeconds(stop.etaFromCurrentSeconds) ?? "-",
+        rightSecondaryLabel: uiStatus === "current" ? "CURRENT" : undefined,
+      };
+    });
+  }, [stopsWithStatus]);
+
+  const nextTimelineStop = timelineStopsForSheet.find((stop) => stop.status === "current")
+    ?? timelineStopsForSheet.find((stop) => stop.status === "upcoming")
+    ?? timelineStopsForSheet[0];
+
+  const nextStopName = nextTimelineStop?.name ?? live?.nextStop ?? orderedStops[0]?.name ?? "-";
+  const nextStopEta = nextTimelineStop?.leftSubLabel
+    ?? live?.estimatedArrival
+    ?? "-";
+  const busApproachingNextStop =
+    typeof trackingData.etaToDestinationSeconds === "number" && trackingData.etaToDestinationSeconds <= 90;
 
   useEffect(() => {
     const previous = previousCurrentStopIdRef.current;
-    if (tracking.currentStopId && previous && tracking.currentStopId !== previous) {
+    if (trackingData.currentStopId && previous && trackingData.currentStopId !== previous) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     }
-    previousCurrentStopIdRef.current = tracking.currentStopId;
-  }, [tracking.currentStopId]);
+    previousCurrentStopIdRef.current = trackingData.currentStopId;
+  }, [trackingData.currentStopId]);
+
+  useEffect(() => {
+    if (!trackingData.bus?.id) {
+      setIsSubscribed(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const subscriptions = await getUserSubscriptions();
+        if (cancelled) {
+          return;
+        }
+
+        setIsSubscribed(subscriptions.some((subscription) => String(subscription.busId) === String(trackingData.bus?.id)));
+      } catch (subscriptionErr) {
+        console.error("[UserTracking][loadSubscriptions]", { error: subscriptionErr });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [trackingData.bus?.id]);
 
   const subscribeForAlerts = async () => {
-    if (!busId || submittingSubscription || isSubscribed) return;
+    if (!trackingData.bus?.id || submittingSubscription || isSubscribed) return;
 
     setSubmittingSubscription(true);
     try {
@@ -327,7 +429,7 @@ export default function UserTrackingScreen() {
         category: "user_tracking",
         message: "Subscribe for alerts requested",
         level: "info",
-        data: { busId },
+        data: { busId: trackingData.bus.id },
       });
 
       const readiness = await ensureForegroundAccess("user_tracking_subscribe_alerts", {
@@ -348,7 +450,7 @@ export default function UserTrackingScreen() {
       }
 
       await createUserSubscription({
-        busId,
+        busId: trackingData.bus.id,
         notifyOnBusStart: true,
         notifyOnNearStop: true,
         userLatitude: userLatitude ?? 17.4012,
@@ -358,225 +460,15 @@ export default function UserTrackingScreen() {
 
       setIsSubscribed(true);
     } catch (subscriptionErr) {
-      console.error("[UserTracking][subscribeForAlerts]", { busId, error: subscriptionErr });
+      console.error("[UserTracking][subscribeForAlerts]", { error: subscriptionErr });
       captureSentryException(subscriptionErr, {
         tags: { area: "user_tracking", operation: "subscribe_for_alerts" },
-        extra: { busId },
         level: "warning",
       });
     } finally {
       setSubmittingSubscription(false);
     }
   };
-
-  const eta =
-    tracking.routeEtaSummary?.etaToDestinationText ??
-    formatEtaFromSeconds(tracking.routeEtaSummary?.etaToDestinationSeconds) ??
-    live?.etaToDestinationText ??
-    live?.estimatedArrival ??
-    formatEtaFromSeconds(live?.etaToDestinationSeconds) ??
-    formatEtaFromSeconds(live?.estimatedDurationSeconds) ??
-    "-";
-
-  const tripStatusLabel = getTripStatusLabel(live?.trip?.status ?? live?.tripStatus);
-  const connectionLabel = tracking.connectionStatus === "connected" ? "Live" : tracking.connectionStatus === "reconnecting" ? "Reconnecting" : "Offline";
-  const freshnessBase = tracking.lastUpdatedTimestamp != null
-    ? getFreshnessLabel(new Date(tracking.lastUpdatedTimestamp).toISOString())
-    : getFreshnessLabel(live?.lastUpdated);
-  const freshnessLabel = tracking.isStale ? `${freshnessBase} • Stale` : freshnessBase;
-
-  const mergedTimelineStops = useMemo<OrderedStop[]>(() => {
-    if (!tracking.timelineStops.length) {
-      return orderedStops;
-    }
-
-    const realtimeById = new Map(
-      tracking.timelineStops
-        .filter((stop) => typeof stop.id === "string" && stop.id.trim().length > 0)
-        .map((stop) => [String(stop.id), stop]),
-    );
-
-    return orderedStops.map((stop) => {
-      const realtime = stop.id ? realtimeById.get(stop.id) : undefined;
-      if (!realtime) {
-        return stop;
-      }
-
-      return {
-        ...stop,
-        status: realtime.status ?? stop.status,
-        isPassed: typeof realtime.isPassed === "boolean" ? realtime.isPassed : stop.isPassed,
-        etaFromCurrentSeconds: realtime.etaFromCurrentSeconds ?? stop.etaFromCurrentSeconds,
-        etaFromCurrentText: realtime.etaFromCurrentText ?? stop.etaFromCurrentText,
-        segmentEtaSeconds: realtime.segmentEtaSeconds ?? stop.segmentEtaSeconds,
-        segmentEtaText: realtime.segmentEtaText ?? stop.segmentEtaText,
-        arrivalClockTimeText: realtime.arrivalClockTimeText ?? stop.arrivalClockTimeText,
-        departedClockTimeText: realtime.departedClockTimeText ?? stop.departedClockTimeText,
-        leftSubLabel: realtime.leftSubLabel ?? stop.leftSubLabel,
-        rightPrimaryLabel: realtime.rightPrimaryLabel ?? stop.rightPrimaryLabel,
-        rightSecondaryLabel: realtime.rightSecondaryLabel ?? stop.rightSecondaryLabel,
-      };
-    });
-  }, [orderedStops, tracking.timelineStops]);
-
-  const routeStartLabel = live?.routeStartName ?? mergedTimelineStops[0]?.name ?? "-";
-  const routeEndLabel = live?.routeEndName ?? mergedTimelineStops[mergedTimelineStops.length - 1]?.name ?? "-";
-
-  const destinationDistance = live?.distanceToDestinationText
-    ?? formatDistanceFromMeters(live?.distanceToDestinationMeters)
-    ?? live?.totalDistanceText
-    ?? "-";
-
-  const trackingStatusLabel = String(
-    live?.trackingStatus
-    ?? live?.fleetStatus
-    ?? live?.status
-    ?? tracking.connectionStatus,
-  )
-    .replace(/_/g, " ")
-    .toUpperCase();
-
-  const normalizedTripStatus = String(live?.trip?.status ?? live?.tripStatus ?? "PENDING").trim().toUpperCase();
-  const tripStatusBadge = tracking.connectionStatus !== "connected"
-    ? "OFFLINE"
-    : normalizedTripStatus.includes("STOPPED")
-      ? "STOPPED"
-      : normalizedTripStatus.includes("RUNNING") || normalizedTripStatus.includes("STARTED")
-        ? "RUNNING"
-        : normalizedTripStatus.includes("PENDING")
-          ? "PENDING"
-          : normalizedTripStatus.includes("COMPLETED")
-            ? "COMPLETED"
-            : normalizedTripStatus.includes("CANCEL")
-              ? "CANCELLED"
-              : normalizedTripStatus;
-
-  const stopsWithStatus = useMemo<StopWithStatus[]>(() => {
-    if (!mergedTimelineStops.length) return [];
-
-    const hasBackendStatus = mergedTimelineStops.some((stop) => stop.status != null);
-    if (hasBackendStatus) {
-      return mergedTimelineStops.map((stop) => ({
-        ...stop,
-        status: stop.status === "current"
-          ? "next"
-          : stop.status === "passed"
-            ? "passed"
-            : "upcoming",
-      }));
-    }
-
-    const hasPassState = mergedTimelineStops.some((stop) => typeof stop.isPassed === "boolean");
-    if (hasPassState) {
-      const firstNotPassed = mergedTimelineStops.findIndex((stop) => stop.isPassed !== true);
-      const currentIndex = firstNotPassed < 0 ? mergedTimelineStops.length - 1 : firstNotPassed;
-      return mergedTimelineStops.map((stop, index) => ({
-        ...stop,
-        status: stop.isPassed === true ? "passed" : index === currentIndex ? "next" : "upcoming",
-      }));
-    }
-
-    const currentStopById = tracking.currentStopId ? mergedTimelineStops.findIndex((stop) => stop.id === tracking.currentStopId) : -1;
-    const nextStopById = tracking.nextStopId ? mergedTimelineStops.findIndex((stop) => stop.id === tracking.nextStopId) : -1;
-
-    if (currentStopById >= 0) {
-      return mergedTimelineStops.map((stop, index) => ({
-        ...stop,
-        status: index < currentStopById ? "passed" : index === currentStopById ? "next" : "upcoming",
-      }));
-    }
-
-    if (nextStopById >= 0) {
-      return mergedTimelineStops.map((stop, index) => ({
-        ...stop,
-        status: index < nextStopById ? "passed" : index === nextStopById ? "next" : "upcoming",
-      }));
-    }
-
-    return mergedTimelineStops.map((stop, index) => ({
-      ...stop,
-      status: index === 0 ? "next" : "upcoming",
-    }));
-  }, [mergedTimelineStops, tracking.currentStopId, tracking.nextStopId]);
-
-  const timelineStopsForSheet = useMemo<TimelineStop[]>(() => {
-    return stopsWithStatus.map((stop, index) => {
-      const uiStatus: "passed" | "current" | "upcoming" =
-        stop.status === "next" ? "current" : stop.status;
-      const etaSecondsFromSocket = stop.id ? tracking.etaMap[stop.id] : undefined;
-      const etaSeconds = typeof etaSecondsFromSocket === "number"
-        ? etaSecondsFromSocket
-        : stop.etaFromCurrentSeconds;
-      const labelFromBackend = stop.leftSubLabel ?? stop.rightPrimaryLabel;
-      const arrivalClock = stop.arrivalClockTimeText;
-      const departedClock = stop.departedClockTimeText;
-
-      if (labelFromBackend) {
-        return {
-          id: stop.id,
-          name: stop.name || `Stop ${index + 1}`,
-          status: uiStatus,
-          sequence: stop.sequenceOrder ?? index + 1,
-          leftSubLabel: stop.leftSubLabel,
-          rightPrimaryLabel: stop.rightPrimaryLabel,
-          rightSecondaryLabel:
-            stop.rightSecondaryLabel?.toUpperCase() === "CURRENT"
-              ? "CURRENT"
-              : undefined,
-        };
-      }
-
-      if (uiStatus === "passed") {
-        return {
-          id: stop.id,
-          name: stop.name || `Stop ${index + 1}`,
-          status: uiStatus,
-          sequence: stop.sequenceOrder ?? index + 1,
-          leftSubLabel: departedClock ? `Departed ${departedClock}` : "Passed",
-          rightPrimaryLabel: "Passed",
-        };
-      }
-
-      if (uiStatus === "current") {
-        return {
-          id: stop.id,
-          name: stop.name || `Stop ${index + 1}`,
-          status: uiStatus,
-          sequence: stop.sequenceOrder ?? index + 1,
-          leftSubLabel: "Arriving Now",
-          rightPrimaryLabel: arrivalClock ?? "Now",
-          rightSecondaryLabel: "CURRENT",
-        };
-      }
-
-      return {
-        id: stop.id,
-        name: stop.name || `Stop ${index + 1}`,
-        status: uiStatus,
-        sequence: stop.sequenceOrder ?? index + 1,
-        leftSubLabel: stop.etaFromCurrentText
-          ?? (typeof etaSeconds === "number" ? `In ${Math.max(1, Math.round(etaSeconds / 60))} mins` : undefined)
-          ?? stop.distanceFromCurrentText
-          ?? "Upcoming",
-        rightPrimaryLabel: arrivalClock
-          ?? formatClockTimeFromOffset(etaSeconds)
-          ?? formatEtaFromSeconds(etaSeconds)
-          ?? "-",
-      };
-    });
-  }, [stopsWithStatus, tracking.etaMap]);
-
-  const nextTimelineStop = timelineStopsForSheet.find((stop) => stop.status === "current")
-    ?? timelineStopsForSheet.find((stop) => stop.status === "upcoming")
-    ?? timelineStopsForSheet[0];
-
-  const nextStopName = nextTimelineStop?.name ?? live?.nextStop ?? mergedTimelineStops[0]?.name ?? "-";
-  const nextStopEta = nextTimelineStop?.leftSubLabel
-    ?? mergedTimelineStops.find((stop) => stop.id === nextTimelineStop?.id)?.etaFromCurrentText
-    ?? live?.estimatedArrival
-    ?? "-";
-  const nextStopEtaSecondsFromSocket = nextTimelineStop?.id ? tracking.etaMap[nextTimelineStop.id] : undefined;
-  const busApproachingNextStop = typeof nextStopEtaSecondsFromSocket === "number" && nextStopEtaSecondsFromSocket <= 90;
 
   if (loading) {
     return (
@@ -591,16 +483,51 @@ export default function UserTrackingScreen() {
       <SafeAreaView className="flex-1 items-center justify-center bg-slate-50 px-8">
         <MaterialCommunityIcons name="bus-alert" size={56} color="#ef4444" />
         <Text className="mt-4 text-center text-lg font-semibold text-red-600">{error}</Text>
+        <Pressable
+          className="mt-5 rounded-full bg-blue-600 px-5 py-3"
+          onPress={trackingData.refresh}
+        >
+          <Text className="text-sm font-semibold text-white">Retry</Text>
+        </Pressable>
       </SafeAreaView>
     );
   }
 
+  if (!trackingData.route) {
+    return (
+      <SafeAreaView className="flex-1 items-center justify-center bg-slate-50 px-8">
+        <MaterialCommunityIcons name="map-marker-question" size={56} color="#0f172a" />
+        <Text className="mt-4 text-center text-lg font-semibold text-slate-900">
+          No route assigned
+        </Text>
+        <Text className="mt-2 text-center text-sm text-slate-600">
+          Your passenger profile does not have an active route yet.
+        </Text>
+        <Pressable
+          className="mt-5 rounded-full bg-blue-600 px-5 py-3"
+          onPress={trackingData.refresh}
+        >
+          <Text className="text-sm font-semibold text-white">Retry</Text>
+        </Pressable>
+      </SafeAreaView>
+    );
+  }
+
+  const routeStartLabel = trackingData.route.startName ?? orderedStops[0]?.name ?? "-";
+  const routeEndLabel = trackingData.route.endName ?? orderedStops[orderedStops.length - 1]?.name ?? "-";
+  const destinationDistance = trackingData.route.totalDistanceMeters != null
+    ? formatDistanceFromMeters(trackingData.route.totalDistanceMeters) ?? "-"
+    : "-";
+  const eta = trackingData.etaToDestinationText
+    ?? formatEtaFromSeconds(trackingData.etaToDestinationSeconds)
+    ?? formatEtaFromSeconds(trackingData.route.estimatedDurationSeconds)
+    ?? "-";
+
   return (
     <View className="relative flex-1 bg-slate-900">
-      {/* Full-screen map */}
       <View className="absolute inset-0">
         <RouteMap
-          coordinates={path ?? []}
+          coordinates={path}
           encodedPolyline={routeEncodedPolyline || undefined}
           currentLocation={currentLocation ?? undefined}
           stops={stopsWithStatus.map((stop) => ({
@@ -613,7 +540,6 @@ export default function UserTrackingScreen() {
         />
       </View>
 
-      {/* Top overlay - floating header */}
       <SafeAreaView className="absolute left-0 right-0 top-0 z-10 px-4 py-3">
         <View className="flex-row items-center justify-between">
           <Pressable
@@ -624,16 +550,15 @@ export default function UserTrackingScreen() {
           </Pressable>
 
           <Text className="flex-1 px-3 text-center text-[15px] font-semibold text-white drop-shadow-lg">
-            Bus {live?.numberPlate || params.plate || "-"}
+            Bus {trackingData.bus?.numberPlate || "-"}
           </Text>
 
-          <View className={`rounded-full px-3 py-1.5 shadow-lg ${tracking.connectionStatus === "connected" ? "bg-emerald-500" : tracking.connectionStatus === "reconnecting" ? "bg-amber-500" : "bg-slate-600"}`}>
+          <View className={`rounded-full px-3 py-1.5 shadow-lg ${trackingData.connectionStatus === "connected" ? "bg-emerald-500" : trackingData.connectionStatus === "reconnecting" ? "bg-amber-500" : "bg-slate-600"}`}>
             <Text className="text-xs font-semibold text-white">{connectionLabel}</Text>
           </View>
         </View>
       </SafeAreaView>
 
-      {/* Draggable bottom sheet */}
       <BottomSheet ref={bottomSheetRef} collapsedHeight={180} initialState="half" onStateChange={setSheetPosition}>
         <BottomSheetContent
           state={sheetPosition}
@@ -644,12 +569,12 @@ export default function UserTrackingScreen() {
           nextStopEta={nextStopEta}
           tripEtaToDestination={eta}
           destinationDistance={destinationDistance}
-          routeName={live?.routeName || params.route || "-"}
+          routeName={live?.routeName || "-"}
           routeStart={routeStartLabel}
           routeEnd={routeEndLabel}
           stops={timelineStopsForSheet}
-          currentStopId={tracking.currentStopId}
-          nextStopId={tracking.nextStopId}
+          currentStopId={trackingData.currentStopId}
+          nextStopId={trackingData.nextStopId}
           busApproaching={busApproachingNextStop}
           isSubscribed={isSubscribed}
           onSubscribePress={subscribeForAlerts}

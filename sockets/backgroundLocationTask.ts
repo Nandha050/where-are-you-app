@@ -3,6 +3,7 @@ import * as Location from "expo-location";
 import * as SecureStore from "expo-secure-store";
 import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
+import { ANDROID_CONFIG } from "../src/config/constants";
 import { locationQueueManager } from "../src/driver/queue/LocationQueueManager";
 import { httpSyncManager } from "../src/driver/sync/HTTPSyncManager";
 import socketService from "./socketService";
@@ -11,8 +12,6 @@ const LOCATION_TASK_NAME = "background-location-task";
 const LOCATION_TRACKING_ENABLED_KEY = "location_tracking_enabled";
 const ASSIGNED_BUS_ID_KEY = "assigned_bus_id";
 const AUTH_TOKEN_KEY = "auth_token";
-const MIN_DISTANCE_METERS = 5;
-const MIN_TIME_DELTA_MS = 5000;
 
 // ✅ Storage keys for HTTPSyncManager restoration in background context
 const SYNC_MANAGER_STORAGE_KEYS = {
@@ -27,32 +26,6 @@ type LocationPayload = {
   longitude: number;
   speed: number;
   timestamp: string;
-};
-
-const toRadians = (value: number): number => (value * Math.PI) / 180;
-
-const distanceMeters = (
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number,
-): number => {
-  const R = 6371000;
-  const dLat = toRadians(lat2 - lat1);
-  const dLon = toRadians(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRadians(lat1)) *
-    Math.cos(toRadians(lat2)) *
-    Math.sin(dLon / 2) *
-    Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-};
-
-const distanceThreshold = (lat1: number, lon1: number, lat2: number, lon2: number): boolean => {
-  const moved = distanceMeters(lat1, lon1, lat2, lon2);
-  return moved >= MIN_DISTANCE_METERS;
 };
 
 const emitSocketLocation = (payload: LocationPayload): void => {
@@ -310,9 +283,10 @@ export const backgroundLocationService = {
             timeInterval: 3000,
             distanceInterval: 5,
             foregroundService: {
-              notificationTitle: "Live Tracking Active",
-              notificationBody: "Your location is being shared in background",
-              notificationColor: "#1d4ed8",
+              notificationTitle: ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.title,
+              notificationBody: ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.body,
+              notificationColor: ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.color,
+              killServiceOnDestroy: false,
             },
           });
           console.log(

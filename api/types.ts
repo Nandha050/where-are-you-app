@@ -34,6 +34,66 @@ export interface ActiveTrip {
   updatedAt?: string;
 }
 
+export interface TrackingRoute {
+  id: string;
+  name: string;
+  startName?: string | null;
+  endName?: string | null;
+  startLat?: number | null;
+  startLng?: number | null;
+  endLat?: number | null;
+  endLng?: number | null;
+  encodedPolyline: string;
+  totalDistanceMeters?: number;
+  estimatedDurationSeconds?: number;
+}
+
+export interface TrackingStop {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  sequenceOrder: number;
+  radiusMeters?: number | null;
+}
+
+export interface TrackingBus {
+  id: string;
+  numberPlate: string;
+  status?: string | null;
+}
+
+export interface TrackingDriver {
+  id: string;
+  name: string;
+  phone: string | null;
+}
+
+export interface TrackingTrip {
+  id: string;
+  status: TripStatus | string;
+  startedAt: string | null;
+  currentLocation?: {
+    latitude: number;
+    longitude: number;
+  } | null;
+  updatedAt?: string | null;
+}
+
+export interface UserTrackingActiveTripData {
+  route: TrackingRoute | null;
+  stops: TrackingStop[] | null;
+  trip: TrackingTrip | null;
+  bus: TrackingBus | null;
+  driver: TrackingDriver | null;
+}
+
+export interface UserTrackingActiveTripResponse {
+  success: boolean;
+  message?: string;
+  data: UserTrackingActiveTripData;
+}
+
 export interface DriverBus {
   id: string;
   numberPlate: string;

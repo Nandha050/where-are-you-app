@@ -1,10 +1,8 @@
-import type { Socket } from "socket.io-client";
+import { io, type Socket } from "socket.io-client";
 import {
   addSentryBreadcrumb,
   captureSentryException,
 } from "../monitoring/sentry";
-
-const { io } = require("socket.io-client");
 
 const SOCKET_PATH = process.env.EXPO_PUBLIC_SOCKET_PATH || "/socket.io";
 
@@ -31,9 +29,28 @@ class SocketService {
   private socket: Socket | null = null;
   private activeBusRooms = new Set<string>();
   private activeRouteRooms = new Set<string>();
+  private activeTripRooms = new Set<string>();
   private connectionUrl: string | null = null;
   private reconnectAttemptListeners = new Set<(attempt: unknown) => void>();
   private connectionStatus: SocketConnectionStatus = "offline";
+
+  private rejoinTrackedRooms(): void {
+    if (!this.socket?.connected) {
+      return;
+    }
+
+    this.activeBusRooms.forEach((busId) => {
+      this.socket?.emit("joinBusRoom", String(busId));
+    });
+
+    this.activeRouteRooms.forEach((routeId) => {
+      this.socket?.emit("joinRoute", String(routeId));
+    });
+
+    this.activeTripRooms.forEach((tripId) => {
+      this.socket?.emit("subscribe:trip", String(tripId));
+    });
+  }
 
   connect(url: string, token?: string): void {
     const normalizedUrl = normalizeSocketUrl(url);
@@ -150,14 +167,10 @@ class SocketService {
           normalizedUrl,
           joinedRooms: Array.from(this.activeBusRooms),
           joinedRouteRooms: Array.from(this.activeRouteRooms),
+          joinedTripRooms: Array.from(this.activeTripRooms),
         },
       });
-      this.activeBusRooms.forEach((busId) => {
-        socket.emit("joinBusRoom", String(busId));
-      });
-      this.activeRouteRooms.forEach((routeId) => {
-        socket.emit("joinRoute", String(routeId));
-      });
+      this.rejoinTrackedRooms();
     });
 
     socket.on("disconnect", (reason: unknown) => {
@@ -406,6 +419,36 @@ class SocketService {
     }
   }
 
+  joinTripRoom(tripId: string): void {
+    const normalized = String(tripId || "").trim();
+    if (!normalized) {
+      return;
+    }
+
+    this.activeTripRooms.clear();
+    this.activeTripRooms.add(normalized);
+    if (this.socket?.connected) {
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Join trip room",
+        level: "info",
+        data: {
+          tripId: normalized,
+        },
+      });
+      this.socket.emit("subscribe:trip", normalized);
+    }
+  }
+
+  leaveTripRoom(tripId: string): void {
+    const normalized = String(tripId || "").trim();
+    if (!normalized) {
+      return;
+    }
+
+    this.activeTripRooms.delete(normalized);
+  }
+
   leaveRouteRoom(routeId: string): void {
     const normalized = String(routeId || "").trim();
     if (!normalized) {
@@ -440,6 +483,7 @@ class SocketService {
     this.connectionUrl = null;
     this.activeBusRooms.clear();
     this.activeRouteRooms.clear();
+    this.activeTripRooms.clear();
   }
 
   /**

@@ -141,8 +141,8 @@ export const ADAPTIVE_TRACKING_PRESETS = {
 export const ANDROID_CONFIG = {
     // Foreground service notification
     FOREGROUND_SERVICE_NOTIFICATION: {
-        title: 'Live Tracking Active',
-        body: 'Your location is being shared in background',
+        title: 'Driver Tracking Active',
+        body: 'Your driver location is being shared in the background',
         color: '#1d4ed8',
         priority: 'high' as const,
         channelId: 'location-tracking',
@@ -155,6 +155,7 @@ export const ANDROID_CONFIG = {
         'android.permission.ACCESS_BACKGROUND_LOCATION',
         'android.permission.FOREGROUND_SERVICE',
         'android.permission.FOREGROUND_SERVICE_LOCATION',
+        'android.permission.POST_NOTIFICATIONS',
         'android.permission.RECEIVE_BOOT_COMPLETED',
     ],
 
