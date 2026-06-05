@@ -32,6 +32,7 @@ export default function UserLayout() {
       <Stack.Screen name="saved" />
       <Stack.Screen name="profile" />
       <Stack.Screen name="tracking" />
+      <Stack.Screen name="select-stop" />
     </Stack>
   );
 }

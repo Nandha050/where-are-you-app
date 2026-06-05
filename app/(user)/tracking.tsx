@@ -1,6 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import polyline from "@mapbox/polyline";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -161,6 +161,8 @@ const getTripStatusLabel = (status: unknown): string => {
 export default function UserTrackingScreen() {
   useSentryScreen("user/tracking");
 
+  const { busId, tripId } = useLocalSearchParams<{ busId?: string; tripId?: string }>();
+
   useEffect(() => {
     if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
       UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -168,7 +170,7 @@ export default function UserTrackingScreen() {
   }, []);
 
   const { ensureForegroundAccess, getCurrentPositionSafe } = useLocation();
-  const trackingData = useTrackingData();
+  const trackingData = useTrackingData(busId, tripId);
   const [submittingSubscription, setSubmittingSubscription] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [sheetPosition, setSheetPosition] = useState<BottomSheetState>("half");

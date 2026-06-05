@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL } from "../api/client";
 import { TrackingBus, TrackingDriver, TrackingRoute, TrackingStop, TrackingTrip } from "../api/types";
-import { getUserActiveTrip } from "../api/user";
+import { getUserActiveTrip, getUserBusLive } from "../api/user";
 import socketService, { SocketConnectionStatus } from "../sockets/socketService";
 import { useAuth } from "./useAuth";
 
@@ -235,7 +235,7 @@ const normalizeStops = (stops: TrackingStop[] | null): TrackingStop[] | null => 
     return [...stops].sort((a, b) => a.sequenceOrder - b.sequenceOrder);
 };
 
-export function useTrackingData(): TrackingDataHook {
+export function useTrackingData(paramBusId?: string, paramTripId?: string): TrackingDataHook {
     const { token } = useAuth();
     const [state, setState] = useState<TrackingDataState>(INITIAL_STATE);
     const requestIdRef = useRef(0);
@@ -253,7 +253,51 @@ export function useTrackingData(): TrackingDataHook {
 
         void (async () => {
             try {
-                const response = await getUserActiveTrip();
+                let responseData;
+                if (paramBusId) {
+                    const live = await getUserBusLive(paramBusId);
+                    responseData = {
+                        success: true,
+                        data: {
+                            route: {
+                                id: live.routeId || '',
+                                name: live.routeName,
+                                startName: live.routeStartName,
+                                endName: live.routeEndName,
+                                startLat: live.routeStartLat,
+                                startLng: live.routeStartLng,
+                                endLat: live.routeEndLat,
+                                endLng: live.routeEndLng,
+                                encodedPolyline: live.encodedPolyline,
+                                totalDistanceMeters: live.totalDistanceMeters,
+                                estimatedDurationSeconds: live.estimatedDurationSeconds
+                            },
+                            stops: live.stops.map(stop => ({
+                                id: stop.id || '',
+                                name: stop.name || '',
+                                latitude: stop.lat ?? stop.latitude ?? 0,
+                                longitude: stop.lng ?? stop.longitude ?? 0,
+                                sequenceOrder: stop.sequenceOrder ?? 0,
+                                radiusMeters: stop.radiusMeters ?? null
+                            })),
+                            trip: {
+                                id: live.trip?.id || paramTripId || '',
+                                status: live.tripStatus || live.status || 'PENDING',
+                                startedAt: null,
+                                currentLocation: (live.currentLat != null && live.currentLng != null) ? { latitude: live.currentLat, longitude: live.currentLng } : null,
+                                updatedAt: live.lastUpdated
+                            },
+                            bus: {
+                                id: live.busId,
+                                numberPlate: live.numberPlate,
+                                status: live.fleetStatus
+                            },
+                            driver: null
+                        }
+                    };
+                } else {
+                    responseData = await getUserActiveTrip();
+                }
 
                 if (currentRequestId !== requestIdRef.current) {
                     return;
@@ -263,18 +307,18 @@ export function useTrackingData(): TrackingDataHook {
 
                 setState((previous) => ({
                     ...previous,
-                    route: response.data.route,
-                    stops: normalizeStops(response.data.stops),
-                    trip: response.data.trip,
-                    bus: response.data.bus,
-                    driver: response.data.driver,
-                    currentLocation: response.data.trip?.currentLocation ?? null,
+                    route: responseData.data.route,
+                    stops: normalizeStops(responseData.data.stops),
+                    trip: responseData.data.trip,
+                    bus: responseData.data.bus,
+                    driver: responseData.data.driver,
+                    currentLocation: responseData.data.trip?.currentLocation ?? null,
                     currentStopId: null,
                     nextStopId: null,
                     etaToDestinationSeconds: null,
                     etaToDestinationText: null,
                     speedKmph: null,
-                    lastUpdatedAt: response.data.trip?.updatedAt ?? response.data.trip?.startedAt ?? null,
+                    lastUpdatedAt: responseData.data.trip?.updatedAt ?? responseData.data.trip?.startedAt ?? null,
                     connectionStatus: socketService.getConnectionStatus(),
                     loading: false,
                     error: null,
@@ -291,7 +335,7 @@ export function useTrackingData(): TrackingDataHook {
                 }));
             }
         })();
-    }, []);
+    }, [paramBusId, paramTripId]);
 
     useEffect(() => {
         refresh();

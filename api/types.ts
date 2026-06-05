@@ -255,6 +255,7 @@ export interface UserNotification {
   title?: string;
   message?: string;
   body?: string;
+  type?: string;
   createdAt?: string;
   readAt?: string | null;
   isRead?: boolean;
