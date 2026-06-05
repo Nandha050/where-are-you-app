@@ -8,7 +8,7 @@ import {
   useFonts,
 } from "@expo-google-fonts/poppins";
 import * as Sentry from "@sentry/react-native";
-import { Stack, useSegments, type ErrorBoundaryProps } from "expo-router";
+import { Stack, useSegments, router, type ErrorBoundaryProps } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { reaction } from "mobx";
 import { useEffect } from "react";
@@ -22,6 +22,11 @@ import {
   setupSentryGlobalHandlers,
 } from "../monitoring/sentry";
 import authStore from "../store/auth";
+import * as TaskManager from "expo-task-manager";
+import * as Notifications from "expo-notifications";
+import * as Speech from "expo-speech";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { notificationService } from "../src/core/notifications/NotificationService";
 
 // Keep splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -86,6 +91,39 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return <AppErrorBoundary error={error} retry={retry} />;
 }
 
+const BACKGROUND_NOTIFICATION_TASK = "BACKGROUND-NOTIFICATION-TASK";
+
+TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
+  if (error) {
+    console.error("[Background Notification Task] Error:", error);
+    return;
+  }
+
+  try {
+    const payload = data as any;
+    const notification = payload?.notification;
+    const voiceMessage =
+      notification?.request?.content?.data?.voiceMessage ||
+      notification?.data?.voiceMessage;
+
+    if (voiceMessage) {
+      const local = await AsyncStorage.getItem("@navixgo/notification_preferences");
+      const prefs = local ? JSON.parse(local) : null;
+      const voiceEnabled = prefs ? prefs.voiceEnabled : true;
+      const language = prefs ? prefs.language : "en";
+
+      if (voiceEnabled) {
+        await Speech.stop();
+        await Speech.speak(voiceMessage, { language, rate: 0.95 });
+      }
+    }
+  } catch (err) {
+    console.error("[Background Notification Task] Execution failed:", err);
+  }
+});
+
+void Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK);
+
 export default Sentry.wrap(function RootLayout() {
   const segments = useSegments();
   const [fontsLoaded, fontError] = useFonts({
@@ -96,6 +134,32 @@ export default Sentry.wrap(function RootLayout() {
     Poppins_800ExtraBold,
     Poppins_900Black,
   });
+
+  // Initialize notifications on user login
+  useEffect(() => {
+    if (authStore.user?.id && authStore.token) {
+      void notificationService.init(authStore.user.id);
+    }
+  }, [authStore.user?.id, authStore.token]);
+
+  // Handle deep linking from notification taps
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      const busId = data?.busId;
+      const tripId = data?.tripId;
+      if (busId || tripId) {
+        router.push({
+          pathname: "/(user)/tracking",
+          params: { busId, tripId },
+        } as any);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!fontsLoaded && !fontError) {

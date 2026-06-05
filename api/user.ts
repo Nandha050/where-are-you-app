@@ -799,3 +799,50 @@ export const markUserNotificationRead = async (notificationId: string) => {
     return assertAxiosSuccess(response, "markUserNotificationRead");
   });
 };
+
+export const getRouteStops = async (routeId: string) => {
+  return withApiGuard("getRouteStops", async () => {
+    const normalizedRouteId = String(routeId ?? "").trim();
+    if (!normalizedRouteId) {
+      throw new Error("Route ID is required");
+    }
+
+    const response = await apiClient.get(`/api/user/routes/${normalizedRouteId}/stops`);
+    const safeResponse = assertAxiosSuccess(response, "getRouteStops");
+    const payload = unwrap<any>(safeResponse.data);
+    return pickArray(payload);
+  });
+};
+
+export const getAssignedStop = async () => {
+  return withApiGuard("getAssignedStop", async () => {
+    const response = await apiClient.get("/api/user/profile/assigned-stop");
+    const safeResponse = assertAxiosSuccess(response, "getAssignedStop");
+    return unwrap<any>(safeResponse.data);
+  });
+};
+
+export const saveAssignedStop = async (routeId: string, stopId: string) => {
+  return withApiGuard("saveAssignedStop", async () => {
+    const response = await apiClient.post("/api/user/profile/assigned-stop", {
+      routeId,
+      stopId,
+    });
+    return assertAxiosSuccess(response, "saveAssignedStop");
+  });
+};
+
+export const registerDeviceToken = async (payload: { deviceToken: string; deviceType: string }) => {
+  return withApiGuard("registerDeviceToken", async () => {
+    const response = await apiClient.post("/api/notifications/register-device", payload);
+    return assertAxiosSuccess(response, "registerDeviceToken");
+  });
+};
+
+export const getNotificationPreferences = async () => {
+  return withApiGuard("getNotificationPreferences", async () => {
+    const response = await apiClient.get("/api/notifications/preferences");
+    const safeResponse = assertAxiosSuccess(response, "getNotificationPreferences");
+    return unwrap<any>(safeResponse.data);
+  });
+};
