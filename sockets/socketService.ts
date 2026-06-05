@@ -48,7 +48,7 @@ class SocketService {
     });
 
     this.activeTripRooms.forEach((tripId) => {
-      this.socket?.emit("subscribe:trip", String(tripId));
+      this.socket?.emit("joinTripRoom", String(tripId));
     });
   }
 
@@ -421,12 +421,19 @@ class SocketService {
 
   joinTripRoom(tripId: string): void {
     const normalized = String(tripId || "").trim();
+
     if (!normalized) {
       return;
     }
 
+    console.log("[FRONTEND JOIN TRIP ROOM]", {
+      tripId: normalized,
+      connected: this.socket?.connected,
+    });
+
     this.activeTripRooms.clear();
     this.activeTripRooms.add(normalized);
+
     if (this.socket?.connected) {
       addSentryBreadcrumb({
         category: "socket",
@@ -436,7 +443,12 @@ class SocketService {
           tripId: normalized,
         },
       });
-      this.socket.emit("subscribe:trip", normalized);
+
+      console.log("[EMITTING joinTripRoom]", normalized);
+
+      this.socket.emit("joinTripRoom", normalized);
+    } else {
+      console.log("[SOCKET NOT CONNECTED]");
     }
   }
 

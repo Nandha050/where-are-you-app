@@ -335,35 +335,91 @@ export function useTrackingData(): TrackingDataHook {
         };
 
         const onBusLocationUpdate = (payload: unknown) => {
+            console.log("🔥 EVENT RECEIVED", JSON.stringify(payload, null, 2));
+
             const update = normalizeLocationUpdate(payload);
+
+            console.log("🔥 NORMALIZED UPDATE", update);
+
             if (!update) {
+                console.log("❌ UPDATE NULL - normalizeLocationUpdate returned null");
                 return;
             }
 
             const updateTripId = toString(update.tripId);
             const updateBusId = toString(update.busId);
 
+            console.log("🔥 FILTER CHECK", {
+                updateTripId,
+                currentTripId: tripId,
+                updateBusId,
+                currentBusId: busId,
+            });
+
             if (updateTripId && updateTripId !== tripId) {
+                console.log("❌ TRIP ID MISMATCH", {
+                    received: updateTripId,
+                    expected: tripId,
+                });
                 return;
             }
 
             if (busId && updateBusId && updateBusId !== busId) {
+                console.log("❌ BUS ID MISMATCH", {
+                    received: updateBusId,
+                    expected: busId,
+                });
                 return;
             }
 
             const updateTimestamp = Number(update.timestamp);
-            if (!Number.isFinite(updateTimestamp) || updateTimestamp <= lastLocationTimestampRef.current) {
+
+            console.log("🔥 TIMESTAMP CHECK", {
+                updateTimestamp,
+                lastTimestamp: lastLocationTimestampRef.current,
+            });
+
+            if (
+                !Number.isFinite(updateTimestamp) ||
+                updateTimestamp <= lastLocationTimestampRef.current
+            ) {
+                console.log("❌ OLD OR INVALID TIMESTAMP", {
+                    updateTimestamp,
+                    lastTimestamp: lastLocationTimestampRef.current,
+                });
                 return;
             }
 
             const latitude = Number(update.lat);
             const longitude = Number(update.lng);
-            const nextUpdatedAt = update.updatedAt ?? new Date(updateTimestamp).toISOString();
+
+            console.log("🔥 LOCATION PARSED", {
+                latitude,
+                longitude,
+            });
+
+            const nextUpdatedAt =
+                update.updatedAt ?? new Date(updateTimestamp).toISOString();
 
             lastLocationTimestampRef.current = updateTimestamp;
 
+            console.log("🔥 SETTING LOCATION STATE", {
+                latitude,
+                longitude,
+                nextUpdatedAt,
+            });
+
             setState((previous) => {
-                const nextTripStatus = toString(update.status)?.toUpperCase() ?? previous.trip?.status ?? null;
+                const nextTripStatus =
+                    toString(update.status)?.toUpperCase() ??
+                    previous.trip?.status ??
+                    null;
+
+                console.log("🔥 STATE UPDATED", {
+                    latitude,
+                    longitude,
+                    nextTripStatus,
+                });
 
                 return {
                     ...previous,
@@ -371,16 +427,25 @@ export function useTrackingData(): TrackingDataHook {
                         latitude,
                         longitude,
                     },
-                    currentStopId: update.currentStopId ?? previous.currentStopId,
-                    nextStopId: update.nextStopId ?? previous.nextStopId,
+                    currentStopId:
+                        update.currentStopId ?? previous.currentStopId,
+                    nextStopId:
+                        update.nextStopId ?? previous.nextStopId,
                     etaToDestinationSeconds:
-                        toNumber(update.etaToDestinationSeconds) ?? previous.etaToDestinationSeconds,
-                    etaToDestinationText: update.etaToDestinationText ?? previous.etaToDestinationText,
-                    speedKmph: toNumber(update.speed) ?? previous.speedKmph,
+                        toNumber(update.etaToDestinationSeconds) ??
+                        previous.etaToDestinationSeconds,
+                    etaToDestinationText:
+                        update.etaToDestinationText ??
+                        previous.etaToDestinationText,
+                    speedKmph:
+                        toNumber(update.speed) ??
+                        previous.speedKmph,
                     trip: previous.trip
                         ? {
                             ...previous.trip,
-                            status: nextTripStatus ?? previous.trip.status,
+                            status:
+                                nextTripStatus ??
+                                previous.trip.status,
                             currentLocation: {
                                 latitude,
                                 longitude,
