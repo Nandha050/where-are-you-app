@@ -150,13 +150,36 @@ export class BackgroundLocationService {
 
             const config = this.getAdaptiveConfig();
 
+            // Immediately enqueue the current position so the first sync
+            // cycle has data even before the device moves.
+            try {
+                const currentPos = await Location.getCurrentPositionAsync({
+                    accuracy: config.accuracy,
+                });
+                console.log('📍 [BackgroundLocationService] Got initial position', {
+                    lat: currentPos.coords.latitude,
+                    lng: currentPos.coords.longitude,
+                });
+                await this.handleLocationUpdate(currentPos);
+            } catch (initError) {
+                logger.warn('[BackgroundLocationService] Could not get initial position', { initError });
+            }
+
             this.watchSubscription = await Location.watchPositionAsync(
                 {
                     accuracy: config.accuracy,
                     timeInterval: config.intervalMs / 2, // Faster in foreground
-                    distanceInterval: config.minDistanceMeters,
+                    // distanceInterval 0 = fire on every timeInterval tick regardless of movement.
+                    // This is critical — a stationary driver would never trigger updates
+                    // if distanceInterval > 0 and the bus is parked.
+                    distanceInterval: 0,
                 },
                 (location) => {
+                    console.log('📍 [BackgroundLocationService] watchPositionAsync fired', {
+                        lat: location.coords.latitude,
+                        lng: location.coords.longitude,
+                        queueSizeBefore: locationQueueManager.size(),
+                    });
                     void this.handleLocationUpdate(location);
                 }
             );
@@ -195,7 +218,18 @@ export class BackgroundLocationService {
                 timestamp: new Date(location.timestamp).toISOString(),
             };
 
+            console.log('📍 [BackgroundLocationService.handleLocationUpdate] Enqueuing', {
+                lat: record.latitude,
+                lng: record.longitude,
+                queueBefore: locationQueueManager.size(),
+            });
+
             const enqueued = await locationQueueManager.enqueue(record);
+
+            console.log('📍 [BackgroundLocationService.handleLocationUpdate] Enqueue result', {
+                enqueued,
+                queueAfter: locationQueueManager.size(),
+            });
 
             if (enqueued) {
                 logger.debug('[BackgroundLocationService] Location enqueued', {
@@ -205,7 +239,7 @@ export class BackgroundLocationService {
             }
 
             // Trigger sync if queue is small
-            if (locationQueueManager.size() <= 1) {
+            if (locationQueueManager.size() <= 3) {
                 await httpSyncManager.forceSyncNow();
             }
         } catch (error) {
@@ -275,8 +309,8 @@ export class BackgroundLocationService {
         // ✅ Normal mode: Full accuracy, standard intervals
         return {
             accuracy: Location.Accuracy.High,
-            intervalMs: 10000, // 10 seconds base interval
-            minDistanceMeters: 10, // Update if moved 10+ meters
+            intervalMs: 5000,  // 5 second base interval (was 10s — faster for real-time tracking)
+            minDistanceMeters: 0, // 0 = fire on every timeInterval regardless of movement
             syncIntervalMs: 15000, // 15 seconds (standard)
         };
     }

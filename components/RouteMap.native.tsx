@@ -1,5 +1,5 @@
 import polylineLib from "@mapbox/polyline";
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { View } from "react-native";
 import MapView, { Marker, Polyline } from "react-native-maps";
 
@@ -255,19 +255,16 @@ export default function RouteMap({
 
   const validCurrentLocation = isFiniteCoord(currentLocation) ? currentLocation : undefined;
 
-  const pointsForRegion = useMemo<Coord[]>(() => {
-    return [
-      ...coordinates,
-      ...validStops.map((stop) => ({ latitude: stop.latitude, longitude: stop.longitude })),
-      ...(validCurrentLocation ? [validCurrentLocation] : []),
-    ];
-  }, [coordinates, validCurrentLocation, validStops]);
+  // pointsForRegion is only used once inside onMapReady for the initial fit.
+  // It is NOT used in any effect dep array, so stop-status changes never
+  // trigger a zoom-to-fit-entire-route animation.
+  const pointsForRegionRef = useRef<Coord[]>([]);
+  pointsForRegionRef.current = [
+    ...coordinates,
+    ...validStops.map((stop) => ({ latitude: stop.latitude, longitude: stop.longitude })),
+  ];
 
   const focusPoint = useMemo<Coord>(() => {
-    if (validCurrentLocation) {
-      return validCurrentLocation;
-    }
-
     if (validStops.length > 0) {
       return { latitude: validStops[0].latitude, longitude: validStops[0].longitude };
     }
@@ -277,7 +274,7 @@ export default function RouteMap({
     }
 
     return { latitude: 17.385, longitude: 78.4867 };
-  }, [coordinates, validCurrentLocation, validStops]);
+  }, [coordinates, validStops]);
 
   const initialRegion = useMemo(() => {
     return {
@@ -288,56 +285,57 @@ export default function RouteMap({
     };
   }, [focusPoint]);
 
-  useEffect(() => {
-    if (!mapRef.current) {
-      return;
-    }
-
-    const pointsToFit = pointsForRegion.filter((point) => isFiniteCoord(point));
-
-    if (pointsToFit.length > 1) {
+  // onMapReady: fires exactly ONCE when the native MapView has finished
+  // initialising and is ready to receive camera commands.
+  // This is the only place we call fitToCoordinates — never in a useEffect
+  // whose deps can change on every render.
+  const onMapReady = useCallback(() => {
+    const pointsToFit = pointsForRegionRef.current.filter((p) => isFiniteCoord(p));
+    if (mapRef.current && pointsToFit.length > 1) {
       try {
         mapRef.current.fitToCoordinates(pointsToFit, {
-          edgePadding: {
-            top: 140,
-            right: 48,
-            bottom: 220,
-            left: 48,
-          },
+          edgePadding: { top: 140, right: 48, bottom: 220, left: 48 },
           animated: true,
         });
-        return;
       } catch {
-        // Fall back to camera animation when fitToCoordinates is unavailable.
+        // Map not fully ready — initialRegion is the fallback.
       }
+    }
+  }, []);
+
+  // Effect 2: Smoothly follow the live bus position.
+  // Runs every time the bus moves. Completely independent of the route fit.
+  useEffect(() => {
+    if (!mapRef.current || !validCurrentLocation) {
+      return;
     }
 
     try {
       mapRef.current.animateCamera(
         {
-          center: focusPoint,
+          center: validCurrentLocation,
           zoom: 16,
           heading: 0,
           pitch: 0,
         },
-        { duration: 450 },
+        { duration: 400 },
       );
     } catch {
       try {
         mapRef.current.animateToRegion(
           {
-            latitude: focusPoint.latitude,
-            longitude: focusPoint.longitude,
+            latitude: validCurrentLocation.latitude,
+            longitude: validCurrentLocation.longitude,
             latitudeDelta: 0.006,
             longitudeDelta: 0.006,
           },
-          450,
+          400,
         );
       } catch {
-        // Initial region remains as fallback.
+        // Map not ready — position will render correctly on next frame.
       }
     }
-  }, [focusPoint, pointsForRegion]);
+  }, [validCurrentLocation]);
 
   return (
     <MapView
@@ -348,6 +346,7 @@ export default function RouteMap({
       mapType="standard"
       customMapStyle={STREET_MAP_STYLE}
       initialRegion={initialRegion}
+      onMapReady={onMapReady}
     >
       {/* Start marker */}
       {coordinates[0] ? (
@@ -362,7 +361,7 @@ export default function RouteMap({
       {/* Stop markers — rendered at their exact stored coordinates */}
       {validStops.map((stop, index) => (
         <Marker
-          key={`stop-${index}-${stop.sequenceOrder ?? "na"}`}
+          key={`stop-${stop.sequenceOrder ?? index}-${stop.status ?? "na"}`}
           coordinate={stop}
           title={`${stop.sequenceOrder != null ? `${stop.sequenceOrder}. ` : ""}${stop.name || `Stop ${index + 1}`}`}
           description={

@@ -128,14 +128,23 @@ class SocketService {
         this.socket.auth = { token };
       }
 
-      if (!this.socket.connected) {
+      if (this.socket.connected) {
+        // Socket is already connected — the caller just registered new listeners
+        // but the 'connect' event already fired, so those listeners will never
+        // receive it.  Immediately rejoin tracked rooms so new listeners work.
+        addSentryBreadcrumb({
+          category: "socket",
+          message: "Socket already connected, rejoining rooms for new listeners",
+          level: "info",
+          data: { normalizedUrl },
+        });
+        this.rejoinTrackedRooms();
+      } else {
         addSentryBreadcrumb({
           category: "socket",
           message: "Reusing existing socket instance",
           level: "info",
-          data: {
-            normalizedUrl,
-          },
+          data: { normalizedUrl },
         });
         this.socket.connect();
       }
@@ -459,6 +468,17 @@ class SocketService {
     }
 
     this.activeTripRooms.delete(normalized);
+    // Notify the server so it removes the socket from the room.
+    // Without this emit the server keeps broadcasting to a departed client.
+    if (this.socket?.connected) {
+      addSentryBreadcrumb({
+        category: "socket",
+        message: "Leave trip room",
+        level: "info",
+        data: { tripId: normalized },
+      });
+      this.socket.emit("leaveTripRoom", normalized);
+    }
   }
 
   leaveRouteRoom(routeId: string): void {

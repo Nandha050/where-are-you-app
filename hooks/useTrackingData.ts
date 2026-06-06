@@ -95,6 +95,11 @@ const toPrimitive = (value: unknown): string | number | undefined => {
 const toTimestampMs = (value: unknown): number | null => {
     const numeric = toNumber(value);
     if (numeric != null) {
+        // Detect Unix seconds (anything less than year 2001 in ms).
+        // Backends often send Math.floor(Date.now() / 1000) rather than Date.now().
+        if (numeric < 1_000_000_000_000) {
+            return numeric * 1000;
+        }
         return numeric;
     }
 
@@ -240,6 +245,9 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
     const [state, setState] = useState<TrackingDataState>(INITIAL_STATE);
     const requestIdRef = useRef(0);
     const lastLocationTimestampRef = useRef(0);
+    // Refs keep the handler closure from going stale when trip/bus IDs change.
+    const tripIdRef = useRef<string | null>(null);
+    const busIdRef  = useRef<string | null>(null);
 
     const refresh = useCallback(() => {
         requestIdRef.current += 1;
@@ -341,12 +349,24 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
         refresh();
     }, [refresh]);
 
+    // Keep refs in sync with the latest IDs using a layout effect so
+    // the socket callback always reads fresh values on the next event.
+    useEffect(() => {
+        tripIdRef.current = toString(state.trip?.id);
+        busIdRef.current  = toString(state.bus?.id);
+    });
+
     useEffect(() => {
         const tripId = toString(state.trip?.id);
-        const busId = toString(state.bus?.id);
+        const busId  = toString(state.bus?.id);
         const isTerminal = isTerminalTripStatus(state.trip?.status);
 
-        if (!tripId || isTerminal) {
+        // Need at least a trip ID or bus ID to connect.
+        // Empty string ('') comes from the API when trip.id is missing — treat as absent.
+        const hasTripId = Boolean(tripId && tripId.trim());
+        const hasBusId  = Boolean(busId  && busId.trim());
+
+        if ((!hasTripId && !hasBusId) || isTerminal) {
             setState((previous) => ({
                 ...previous,
                 connectionStatus: socketService.getConnectionStatus(),
@@ -361,7 +381,18 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
                 ...previous,
                 connectionStatus: "connected",
             }));
-            socketService.joinTripRoom(tripId);
+            // Join trip room when we have a trip ID; fall back to bus room
+            // (for cases where passenger tracks a bus without an active trip ID).
+            console.log("🔵 SOCKET CONNECTED - joining room", { hasTripId, tripId, hasBusId, busId });
+            if (hasTripId) {
+                console.log("🔵 JOINING TRIP ROOM", tripId);
+                socketService.joinTripRoom(tripId);
+            } else if (hasBusId) {
+                console.log("🔵 JOINING BUS ROOM (fallback)", busId);
+                socketService.joinBusRoom(busId);
+            } else {
+                console.log("⚠️ NO ROOM TO JOIN - no tripId and no busId");
+            }
         };
 
         const onDisconnect = () => {
@@ -390,28 +421,33 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
                 return;
             }
 
+            // Use refs so we always compare against the current trip/bus IDs
+            // even if this closure was created before the IDs were resolved.
+            const currentTripId = tripIdRef.current;
+            const currentBusId  = busIdRef.current;
+
             const updateTripId = toString(update.tripId);
             const updateBusId = toString(update.busId);
 
             console.log("🔥 FILTER CHECK", {
                 updateTripId,
-                currentTripId: tripId,
+                currentTripId,
                 updateBusId,
-                currentBusId: busId,
+                currentBusId,
             });
 
-            if (updateTripId && updateTripId !== tripId) {
+            if (updateTripId && currentTripId && updateTripId !== currentTripId) {
                 console.log("❌ TRIP ID MISMATCH", {
                     received: updateTripId,
-                    expected: tripId,
+                    expected: currentTripId,
                 });
                 return;
             }
 
-            if (busId && updateBusId && updateBusId !== busId) {
+            if (currentBusId && updateBusId && updateBusId !== currentBusId) {
                 console.log("❌ BUS ID MISMATCH", {
                     received: updateBusId,
-                    expected: busId,
+                    expected: currentBusId,
                 });
                 return;
             }
@@ -423,9 +459,12 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
                 lastTimestamp: lastLocationTimestampRef.current,
             });
 
+            // Allow a 500 ms tolerance so same-second updates (common when the
+            // backend sends Unix seconds) or minor clock skew don't get dropped.
+            const TIMESTAMP_TOLERANCE_MS = 500;
             if (
                 !Number.isFinite(updateTimestamp) ||
-                updateTimestamp <= lastLocationTimestampRef.current
+                updateTimestamp < lastLocationTimestampRef.current - TIMESTAMP_TOLERANCE_MS
             ) {
                 console.log("❌ OLD OR INVALID TIMESTAMP", {
                     updateTimestamp,
@@ -529,9 +568,17 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
             LOCATION_UPDATE_EVENTS.forEach((eventName) => {
                 socketService.off(eventName, onTripLocationUpdate);
             });
-            socketService.leaveTripRoom(tripId);
+            if (hasTripId) {
+                socketService.leaveTripRoom(tripId);
+            } else if (hasBusId) {
+                socketService.leaveBusRoom(busId);
+            }
         };
-    }, [state.bus?.id, state.trip?.id, state.trip?.status, token]);
+    // Intentionally exclude state.trip?.status — a status change (e.g. PENDING→RUNNING)
+    // must NOT cause the effect to teardown and re-join the room, as that drops
+    // in-flight location events during the brief leave/rejoin cycle.
+    }, [state.trip?.id, state.bus?.id, token]);
+
 
     const hasRouteAssigned = useMemo(() => Boolean(state.route), [state.route]);
     const hasActiveTrip = useMemo(() => Boolean(state.trip), [state.trip]);
