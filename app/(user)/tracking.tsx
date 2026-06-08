@@ -190,7 +190,28 @@ export default function UserTrackingScreen() {
         latitude: stop.latitude,
         longitude: stop.longitude,
         sequenceOrder: stop.sequenceOrder,
-      }))
+        status:
+          stop.status === "passed"
+            ? "passed"
+            : stop.status === "current"
+              ? "next"
+              : stop.status === "upcoming"
+                ? "upcoming"
+                : undefined,
+        isPassed: stop.isPassed,
+        leftSubLabel: stop.leftSubLabel,
+        rightPrimaryLabel: stop.rightPrimaryLabel,
+        rightSecondaryLabel: stop.rightSecondaryLabel,
+        arrivalClockTimeText: stop.arrivalClockTimeText,
+        departedClockTimeText: stop.departedClockTimeText,
+        distanceFromCurrentText: stop.distanceFromCurrentText,
+        distanceFromCurrentMeters: stop.distanceFromCurrentMeters,
+        etaFromCurrentText: stop.etaFromCurrentText,
+        etaFromCurrentSeconds: stop.etaFromCurrentSeconds,
+        segmentDistanceText: stop.segmentDistanceText,
+        segmentEtaText: stop.segmentEtaText,
+        segmentEtaSeconds: stop.segmentEtaSeconds,
+      } as OrderedStop))
       .sort((a, b) => (a.sequenceOrder ?? Number.MAX_SAFE_INTEGER) - (b.sequenceOrder ?? Number.MAX_SAFE_INTEGER));
   }, [trackingData.stops]);
 
@@ -269,7 +290,10 @@ export default function UserTrackingScreen() {
         : [],
       currentLat: trackingData.currentLocation?.latitude ?? null,
       currentLng: trackingData.currentLocation?.longitude ?? null,
-      nextStop: orderedStops.find((stop) => stop.id === trackingData.nextStopId)?.name ?? null,
+      nextStop:
+        orderedStops.find((stop) => stop.id === trackingData.currentStopId)?.name ??
+        orderedStops.find((stop) => stop.id === trackingData.nextStopId)?.name ??
+        null,
       estimatedArrival: trackingData.etaToDestinationText ?? null,
       fleetStatus: trackingData.bus?.status ?? null,
       tripStatus: trackingData.trip?.status ?? null,
@@ -331,24 +355,33 @@ export default function UserTrackingScreen() {
       ? orderedStops.findIndex((stop) => stop.id === trackingData.nextStopId)
       : -1;
 
-    if (currentIndex >= 0) {
-      return orderedStops.map((stop, index) => ({
-        ...stop,
-        status: index < currentIndex ? "passed" : index === currentIndex ? "next" : "upcoming",
-      }));
-    }
+    return orderedStops.map((stop, index): StopWithStatus => {
+      if (stop.status === "passed" || stop.status === "next" || stop.status === "upcoming") {
+        return {
+          ...stop,
+          status: stop.status,
+        };
+      }
 
-    if (nextIndex >= 0) {
-      return orderedStops.map((stop, index) => ({
-        ...stop,
-        status: index < nextIndex ? "passed" : index === nextIndex ? "next" : "upcoming",
-      }));
-    }
+      if (currentIndex >= 0) {
+        return {
+          ...stop,
+          status: index < currentIndex ? "passed" : index === currentIndex ? "next" : "upcoming",
+        };
+      }
 
-    return orderedStops.map((stop, index) => ({
-      ...stop,
-      status: index === 0 ? "next" : "upcoming",
-    }));
+      if (nextIndex >= 0) {
+        return {
+          ...stop,
+          status: index < nextIndex ? "passed" : index === nextIndex ? "next" : "upcoming",
+        };
+      }
+
+      return {
+        ...stop,
+        status: index === 0 ? "next" : "upcoming",
+      };
+    });
   }, [orderedStops, trackingData.currentStopId, trackingData.nextStopId]);
 
   const timelineStopsForSheet = useMemo<TimelineStop[]>(() => {
@@ -361,18 +394,20 @@ export default function UserTrackingScreen() {
         status: uiStatus,
         sequence: stop.sequenceOrder ?? index + 1,
         leftSubLabel:
-          uiStatus === "passed"
+          stop.leftSubLabel ??
+          (uiStatus === "passed"
             ? "Passed"
             : uiStatus === "current"
               ? "Arriving Now"
-              : stop.etaFromCurrentText ?? "Upcoming",
+              : stop.etaFromCurrentText ?? "Upcoming"),
         rightPrimaryLabel:
-          uiStatus === "passed"
+          stop.rightPrimaryLabel ??
+          (uiStatus === "passed"
             ? "Passed"
             : uiStatus === "current"
               ? "Now"
-              : formatEtaFromSeconds(stop.etaFromCurrentSeconds) ?? "-",
-        rightSecondaryLabel: uiStatus === "current" ? "CURRENT" : undefined,
+              : formatEtaFromSeconds(stop.etaFromCurrentSeconds) ?? "-"),
+        rightSecondaryLabel: stop.rightSecondaryLabel ?? (uiStatus === "current" ? "CURRENT" : undefined),
       };
     });
   }, [stopsWithStatus]);

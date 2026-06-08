@@ -275,28 +275,34 @@ export default function UserHome() {
             : null;
         const etaToDestinationText = trackingData.etaToDestinationText ?? routeEtaText;
         const nextStop = trackingData.nextStopId
-            ? orderedStops.find((stop) => stop.id === trackingData.nextStopId)?.name ?? null
+            ? orderedStops.find((stop) => stop.id === trackingData.currentStopId)?.name ?? orderedStops.find((stop) => stop.id === trackingData.nextStopId)?.name ?? null
             : trackingData.currentStopId
                 ? orderedStops.find((stop) => stop.id === trackingData.currentStopId)?.name ?? null
                 : orderedStops[0]?.name ?? null;
 
         const mappedStops = orderedStops.map((stop, index) => {
             const status =
-                currentIndex >= 0
-                    ? index < currentIndex
-                        ? "passed"
-                        : index === currentIndex
-                            ? "current"
-                            : "upcoming"
-                    : nextIndex >= 0
-                        ? index < nextIndex
-                            ? "passed"
-                            : index === nextIndex
-                                ? "current"
-                                : "upcoming"
-                        : index === 0
-                            ? "current"
-                            : "upcoming";
+                stop.status === "passed"
+                    ? "passed"
+                    : stop.status === "current"
+                        ? "current"
+                        : stop.status === "upcoming"
+                            ? "upcoming"
+                            : currentIndex >= 0
+                                ? index < currentIndex
+                                    ? "passed"
+                                    : index === currentIndex
+                                        ? "current"
+                                        : "upcoming"
+                                : nextIndex >= 0
+                                    ? index < nextIndex
+                                        ? "passed"
+                                        : index === nextIndex
+                                            ? "current"
+                                            : "upcoming"
+                                    : index === 0
+                                        ? "current"
+                                        : "upcoming";
 
             return {
                 id: stop.id,
@@ -308,6 +314,19 @@ export default function UserHome() {
                 sequenceOrder: stop.sequenceOrder,
                 radiusMeters: stop.radiusMeters ?? undefined,
                 status,
+                isPassed: stop.isPassed,
+                leftSubLabel: stop.leftSubLabel,
+                rightPrimaryLabel: stop.rightPrimaryLabel,
+                rightSecondaryLabel: stop.rightSecondaryLabel,
+                arrivalClockTimeText: stop.arrivalClockTimeText,
+                departedClockTimeText: stop.departedClockTimeText,
+                distanceFromCurrentText: stop.distanceFromCurrentText,
+                distanceFromCurrentMeters: stop.distanceFromCurrentMeters,
+                etaFromCurrentText: stop.etaFromCurrentText,
+                etaFromCurrentSeconds: stop.etaFromCurrentSeconds,
+                segmentDistanceText: stop.segmentDistanceText,
+                segmentEtaText: stop.segmentEtaText,
+                segmentEtaSeconds: stop.segmentEtaSeconds,
             };
         });
 
@@ -422,10 +441,10 @@ export default function UserHome() {
                     stop.status === "current" ? "current" :
                         "upcoming") as "passed" | "current" | "upcoming",
                 time: stop.departedClockTimeText || stop.arrivalClockTimeText,
-                eta: stop.arrivalClockTimeText,
+                eta: stop.etaFromCurrentText || stop.arrivalClockTimeText,
                 helperText: stop.status === "passed" ? "Completed" :
-                    stop.status === "current" ? "Arriving Now" :
-                        "Upcoming",
+                    stop.status === "current" ? stop.leftSubLabel || "Arriving Now" :
+                        stop.leftSubLabel || "Upcoming",
             }))
             .sort((a, b) => {
                 const order = { passed: 0, current: 1, upcoming: 2 };

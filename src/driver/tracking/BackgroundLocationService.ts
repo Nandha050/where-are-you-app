@@ -2,12 +2,10 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { type AppStateStatus, Platform } from 'react-native';
-import { ANDROID_CONFIG } from '../../config/constants';
+import { ANDROID_CONFIG, BACKGROUND_LOCATION_TASK_NAME } from '../../config/constants';
 import { logger } from '../../core/logger/logger';
 import { locationQueueManager, type LocationRecord } from '../queue/LocationQueueManager';
 import { httpSyncManager } from '../sync/HTTPSyncManager';
-
-const BACKGROUND_TASK_NAME = 'driver-background-location';
 
 // ✅ Battery optimization thresholds
 const CRITICAL_BATTERY_THRESHOLD = 0.1; // 10%
@@ -49,11 +47,26 @@ export class BackgroundLocationService {
                 return;
             }
 
+            logger.info('[BackgroundLocationService] Start requested', {
+                taskName: BACKGROUND_LOCATION_TASK_NAME,
+                platform: Platform.OS,
+            });
+
+            if (!(await Location.hasServicesEnabledAsync())) {
+                logger.error('[BackgroundLocationService] Location services disabled');
+                throw new Error('Location services are disabled');
+            }
+
             // Request permissions
             const foreground = await Location.requestForegroundPermissionsAsync();
             if (!foreground.granted) {
+                logger.error('[BackgroundLocationService] Foreground permission denied');
                 throw new Error('Foreground location permission denied');
             }
+
+            logger.info('[BackgroundLocationService] Foreground permission granted', {
+                status: foreground.status,
+            });
 
             if (Platform.OS === 'android') {
                 const notificationPermissions = await Notifications.getPermissionsAsync();
@@ -61,29 +74,43 @@ export class BackgroundLocationService {
                     const requestedPermissions = await Notifications.requestPermissionsAsync();
                     if (requestedPermissions.status !== 'granted') {
                         logger.warn('[BackgroundLocationService] Notification permission denied - foreground service notification may be limited');
+                    } else {
+                        logger.info('[BackgroundLocationService] Notification permission granted', {
+                            status: requestedPermissions.status,
+                        });
                     }
+                } else {
+                    logger.info('[BackgroundLocationService] Notification permission already granted', {
+                        status: notificationPermissions.status,
+                    });
                 }
 
                 const background =
                     await Location.requestBackgroundPermissionsAsync();
                 if (!background.granted) {
-                    logger.warn(
-                        '[BackgroundLocationService] Background permission denied - tracking will stop when app minimized'
-                    );
+                    logger.error('[BackgroundLocationService] Background permission denied');
+                    throw new Error('Background location permission denied');
                 }
+
+                logger.info('[BackgroundLocationService] Background permission granted', {
+                    status: background.status,
+                });
             }
 
             // ✅ Start battery monitoring
             await this.startBatteryMonitoring();
 
-            // Define background task
-            if (!TaskManager.isTaskDefined(BACKGROUND_TASK_NAME)) {
-                TaskManager.defineTask(BACKGROUND_TASK_NAME, this.handleBackgroundLocation);
-            }
+            await this.ensureBackgroundTaskRegistered();
 
             // Start background tracking
             const config = this.getAdaptiveConfig();
-            await Location.startLocationUpdatesAsync(BACKGROUND_TASK_NAME, {
+            logger.info('[BackgroundLocationService] Starting background updates', {
+                accuracy: config.accuracy,
+                intervalMs: config.intervalMs,
+                minDistanceMeters: config.minDistanceMeters,
+                syncIntervalMs: config.syncIntervalMs,
+            });
+            await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK_NAME, {
                 accuracy: config.accuracy,
                 timeInterval: config.intervalMs,
                 distanceInterval: config.minDistanceMeters,
@@ -113,16 +140,22 @@ export class BackgroundLocationService {
     async stop(): Promise<void> {
         try {
             if (!this.isRunning) {
+                logger.debug('[BackgroundLocationService] Stop requested while idle');
                 return;
             }
+
+            logger.info('[BackgroundLocationService] Stop requested');
 
             // ✅ Stop battery monitoring
             this.stopBatteryMonitoring();
 
             // Stop background task
-            const isTaskDefined = TaskManager.isTaskDefined(BACKGROUND_TASK_NAME);
+            const isTaskDefined = TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK_NAME);
             if (isTaskDefined) {
-                await Location.stopLocationUpdatesAsync(BACKGROUND_TASK_NAME);
+                logger.info('[BackgroundLocationService] Stopping background updates', {
+                    taskName: BACKGROUND_LOCATION_TASK_NAME,
+                });
+                await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK_NAME);
             }
 
             // Stop foreground watch
@@ -149,6 +182,10 @@ export class BackgroundLocationService {
             }
 
             const config = this.getAdaptiveConfig();
+            logger.info('[BackgroundLocationService] Starting foreground watch', {
+                accuracy: config.accuracy,
+                intervalMs: config.intervalMs / 2,
+            });
 
             // Immediately enqueue the current position so the first sync
             // cycle has data even before the device moves.
@@ -156,7 +193,7 @@ export class BackgroundLocationService {
                 const currentPos = await Location.getCurrentPositionAsync({
                     accuracy: config.accuracy,
                 });
-                console.log('📍 [BackgroundLocationService] Got initial position', {
+                logger.info('[BackgroundLocationService] Initial foreground position received', {
                     lat: currentPos.coords.latitude,
                     lng: currentPos.coords.longitude,
                 });
@@ -175,7 +212,7 @@ export class BackgroundLocationService {
                     distanceInterval: 0,
                 },
                 (location) => {
-                    console.log('📍 [BackgroundLocationService] watchPositionAsync fired', {
+                    logger.debug('[BackgroundLocationService] Foreground watch fired', {
                         lat: location.coords.latitude,
                         lng: location.coords.longitude,
                         queueSizeBefore: locationQueueManager.size(),
@@ -200,6 +237,8 @@ export class BackgroundLocationService {
             this.watchSubscription.remove();
             this.watchSubscription = null;
             logger.info('[BackgroundLocationService] Foreground tracking stopped');
+        } else {
+            logger.debug('[BackgroundLocationService] Foreground stop requested with no active watch');
         }
     }
 
@@ -218,29 +257,27 @@ export class BackgroundLocationService {
                 timestamp: new Date(location.timestamp).toISOString(),
             };
 
-            console.log('📍 [BackgroundLocationService.handleLocationUpdate] Enqueuing', {
+            logger.info('[BackgroundLocationService] Location received', {
                 lat: record.latitude,
                 lng: record.longitude,
                 queueBefore: locationQueueManager.size(),
+                accuracy: record.accuracy ?? null,
+                speed: record.speed ?? null,
             });
 
             const enqueued = await locationQueueManager.enqueue(record);
 
-            console.log('📍 [BackgroundLocationService.handleLocationUpdate] Enqueue result', {
-                enqueued,
-                queueAfter: locationQueueManager.size(),
-            });
-
             if (enqueued) {
-                logger.debug('[BackgroundLocationService] Location enqueued', {
+                logger.info('[BackgroundLocationService] Location queued', {
+                    lat: record.latitude,
+                    lng: record.longitude,
+                    queueAfter: locationQueueManager.size(),
+                });
+            } else {
+                logger.warn('[BackgroundLocationService] Location was not queued', {
                     lat: record.latitude,
                     lng: record.longitude,
                 });
-            }
-
-            // Trigger sync if queue is small
-            if (locationQueueManager.size() <= 3) {
-                await httpSyncManager.forceSyncNow();
             }
         } catch (error) {
             logger.error('[BackgroundLocationService] Handle location error', {
@@ -249,32 +286,46 @@ export class BackgroundLocationService {
         }
     }
 
-    /**
-     * Handle background task location updates
-     */
-    private handleBackgroundLocation = async (
-        taskData: TaskManager.TaskManagerTaskBody
-    ): Promise<void> => {
-        const locations = (taskData as any).locations as Location.LocationObject[] | undefined;
-
-        if (!locations || locations.length === 0) {
+    async processBackgroundLocations(locations: Location.LocationObject[]): Promise<void> {
+        if (!locations.length) {
+            logger.debug('[BackgroundLocationService] Background task received no locations');
             return;
         }
 
-        try {
-            for (const location of locations) {
-                await this.handleLocationUpdate(location);
-            }
+        logger.info('[BackgroundLocationService] Processing background locations', {
+            count: locations.length,
+            queueBefore: locationQueueManager.size(),
+        });
 
-            // Trigger periodic sync
-            await httpSyncManager.sync();
-        } catch (error) {
-            logger.error('[BackgroundLocationService] Background task error', {
-                error,
+        await locationQueueManager.initialize();
+        if (typeof httpSyncManager.restoreIdentifiersFromStorage === 'function') {
+            await httpSyncManager.restoreIdentifiersFromStorage();
+        }
+
+        for (const location of locations) {
+            await this.handleLocationUpdate(location);
+        }
+
+        logger.info('[BackgroundLocationService] Upload triggered from background task', {
+            queueSize: locationQueueManager.size(),
+        });
+
+        const success = await httpSyncManager.forceSyncNow();
+
+        if (success) {
+            logger.info('[BackgroundLocationService] Background upload completed', {
+                queueSize: locationQueueManager.size(),
+            });
+        } else {
+            logger.warn('[BackgroundLocationService] Background upload failed or was skipped', {
+                queueSize: locationQueueManager.size(),
             });
         }
-    };
+    }
 
+    /**
+     * Handle background task location updates
+     */
     /**
      * Get adaptive configuration based on battery and speed
      * ✅ BATTERY OPTIMIZATION: Reduce accuracy and increase interval on low battery
@@ -416,6 +467,60 @@ export class BackgroundLocationService {
             isLow: this.isLowBattery,
         };
     }
+
+    private async ensureBackgroundTaskRegistered(): Promise<void> {
+        if (TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK_NAME)) {
+            logger.debug('[BackgroundLocationService] Background task already defined', {
+                taskName: BACKGROUND_LOCATION_TASK_NAME,
+            });
+            return;
+        }
+
+        logger.info('[BackgroundLocationService] Defining background task', {
+            taskName: BACKGROUND_LOCATION_TASK_NAME,
+        });
+
+        TaskManager.defineTask(BACKGROUND_LOCATION_TASK_NAME, handleBackgroundLocationTask);
+    }
 }
 
 export const backgroundLocationService = BackgroundLocationService.getInstance();
+
+if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK_NAME)) {
+    logger.info('[BackgroundLocationService] Registering background task at module load', {
+        taskName: BACKGROUND_LOCATION_TASK_NAME,
+    });
+
+    TaskManager.defineTask(BACKGROUND_LOCATION_TASK_NAME, handleBackgroundLocationTask);
+}
+
+async function handleBackgroundLocationTask({
+    data,
+    error,
+}: TaskManager.TaskManagerTaskBody): Promise<void> {
+    logger.info('[BackgroundLocationService] Background task fired', {
+        taskName: BACKGROUND_LOCATION_TASK_NAME,
+        hasError: Boolean(error),
+    });
+
+    if (error) {
+        logger.error('[BackgroundLocationService] Background task error', { error });
+        return;
+    }
+
+    const taskData = data as { locations?: Location.LocationObject[] } | undefined;
+    const locations = taskData?.locations ?? [];
+
+    if (!locations.length) {
+        logger.debug('[BackgroundLocationService] Background task fired with no locations');
+        return;
+    }
+
+    try {
+        await backgroundLocationService.processBackgroundLocations(locations);
+    } catch (taskError) {
+        logger.error('[BackgroundLocationService] Background task failed', {
+            error: taskError,
+        });
+    }
+}

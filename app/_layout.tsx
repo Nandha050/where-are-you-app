@@ -27,6 +27,7 @@ import * as Notifications from "expo-notifications";
 import * as Speech from "expo-speech";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { notificationService } from "../src/core/notifications/NotificationService";
+import "../src/driver/tracking/BackgroundLocationService";
 
 // Keep splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();

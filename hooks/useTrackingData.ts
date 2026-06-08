@@ -3,6 +3,7 @@ import { API_BASE_URL } from "../api/client";
 import { TrackingBus, TrackingDriver, TrackingRoute, TrackingStop, TrackingTrip } from "../api/types";
 import { getUserActiveTrip, getUserBusLive } from "../api/user";
 import socketService, { SocketConnectionStatus } from "../sockets/socketService";
+import { deriveRouteProgress } from "./routeProgressUtils";
 import { useAuth } from "./useAuth";
 
 type Coord = { latitude: number; longitude: number };
@@ -240,6 +241,16 @@ const normalizeStops = (stops: TrackingStop[] | null): TrackingStop[] | null => 
     return [...stops].sort((a, b) => a.sequenceOrder - b.sequenceOrder);
 };
 
+const deriveProgressState = (state: TrackingDataState) => {
+    return deriveRouteProgress({
+        encodedPolyline: state.route?.encodedPolyline ?? null,
+        stops: state.stops,
+        currentLocation: state.currentLocation,
+        speed: state.speedKmph,
+        routeEstimatedDurationSeconds: state.route?.estimatedDurationSeconds ?? null,
+    });
+};
+
 export function useTrackingData(paramBusId?: string, paramTripId?: string): TrackingDataHook {
     const { token } = useAuth();
     const [state, setState] = useState<TrackingDataState>(INITIAL_STATE);
@@ -247,7 +258,14 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
     const lastLocationTimestampRef = useRef(0);
     // Refs keep the handler closure from going stale when trip/bus IDs change.
     const tripIdRef = useRef<string | null>(null);
-    const busIdRef  = useRef<string | null>(null);
+    const busIdRef = useRef<string | null>(null);
+    const derivedProgress = useMemo(() => deriveProgressState(state), [
+        state.currentLocation,
+        state.route?.encodedPolyline,
+        state.route?.estimatedDurationSeconds,
+        state.stops,
+        state.speedKmph,
+    ]);
 
     const refresh = useCallback(() => {
         requestIdRef.current += 1;
@@ -353,18 +371,18 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
     // the socket callback always reads fresh values on the next event.
     useEffect(() => {
         tripIdRef.current = toString(state.trip?.id);
-        busIdRef.current  = toString(state.bus?.id);
+        busIdRef.current = toString(state.bus?.id);
     });
 
     useEffect(() => {
         const tripId = toString(state.trip?.id);
-        const busId  = toString(state.bus?.id);
+        const busId = toString(state.bus?.id);
         const isTerminal = isTerminalTripStatus(state.trip?.status);
 
         // Need at least a trip ID or bus ID to connect.
         // Empty string ('') comes from the API when trip.id is missing — treat as absent.
         const hasTripId = Boolean(tripId && tripId.trim());
-        const hasBusId  = Boolean(busId  && busId.trim());
+        const hasBusId = Boolean(busId && busId.trim());
 
         if ((!hasTripId && !hasBusId) || isTerminal) {
             setState((previous) => ({
@@ -384,10 +402,10 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
             // Join trip room when we have a trip ID; fall back to bus room
             // (for cases where passenger tracks a bus without an active trip ID).
             console.log("🔵 SOCKET CONNECTED - joining room", { hasTripId, tripId, hasBusId, busId });
-            if (hasTripId) {
+            if (hasTripId && tripId) {
                 console.log("🔵 JOINING TRIP ROOM", tripId);
                 socketService.joinTripRoom(tripId);
-            } else if (hasBusId) {
+            } else if (hasBusId && busId) {
                 console.log("🔵 JOINING BUS ROOM (fallback)", busId);
                 socketService.joinBusRoom(busId);
             } else {
@@ -424,7 +442,7 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
             // Use refs so we always compare against the current trip/bus IDs
             // even if this closure was created before the IDs were resolved.
             const currentTripId = tripIdRef.current;
-            const currentBusId  = busIdRef.current;
+            const currentBusId = busIdRef.current;
 
             const updateTripId = toString(update.tripId);
             const updateBusId = toString(update.busId);
@@ -568,15 +586,15 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
             LOCATION_UPDATE_EVENTS.forEach((eventName) => {
                 socketService.off(eventName, onTripLocationUpdate);
             });
-            if (hasTripId) {
+            if (hasTripId && tripId) {
                 socketService.leaveTripRoom(tripId);
-            } else if (hasBusId) {
+            } else if (hasBusId && busId) {
                 socketService.leaveBusRoom(busId);
             }
         };
-    // Intentionally exclude state.trip?.status — a status change (e.g. PENDING→RUNNING)
-    // must NOT cause the effect to teardown and re-join the room, as that drops
-    // in-flight location events during the brief leave/rejoin cycle.
+        // Intentionally exclude state.trip?.status — a status change (e.g. PENDING→RUNNING)
+        // must NOT cause the effect to teardown and re-join the room, as that drops
+        // in-flight location events during the brief leave/rejoin cycle.
     }, [state.trip?.id, state.bus?.id, token]);
 
 
@@ -585,6 +603,13 @@ export function useTrackingData(paramBusId?: string, paramTripId?: string): Trac
 
     return {
         ...state,
+        currentStopId: derivedProgress?.currentStopId ?? state.currentStopId,
+        nextStopId: derivedProgress?.nextStopId ?? state.nextStopId,
+        etaToDestinationSeconds:
+            derivedProgress?.etaToDestinationSeconds ?? state.etaToDestinationSeconds,
+        etaToDestinationText:
+            derivedProgress?.etaToDestinationText ?? state.etaToDestinationText,
+        stops: derivedProgress?.stops ?? state.stops,
         hasRouteAssigned,
         hasActiveTrip,
         refresh,

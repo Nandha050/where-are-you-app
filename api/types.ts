@@ -55,6 +55,21 @@ export interface TrackingStop {
   longitude: number;
   sequenceOrder: number;
   radiusMeters?: number | null;
+  status?: "passed" | "current" | "upcoming";
+  isPassed?: boolean;
+  distanceFromCurrentMeters?: number;
+  distanceFromCurrentText?: string;
+  etaFromCurrentSeconds?: number;
+  etaFromCurrentText?: string;
+  segmentDistanceMeters?: number;
+  segmentDistanceText?: string;
+  segmentEtaSeconds?: number;
+  segmentEtaText?: string;
+  arrivalClockTimeText?: string;
+  departedClockTimeText?: string;
+  leftSubLabel?: string;
+  rightPrimaryLabel?: string;
+  rightSecondaryLabel?: string;
 }
 
 export interface TrackingBus {
@@ -123,6 +138,7 @@ export interface DriverStop {
   latitude?: number;
   longitude?: number;
   sequenceOrder?: number;
+  radiusMeters?: number | null;
   distanceFromCurrentMeters?: number;
   distanceFromCurrentText?: string;
   etaFromCurrentSeconds?: number;
