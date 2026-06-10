@@ -92,6 +92,14 @@ export default {
             "Allow Where Are You to use your location for bus tracking.",
         },
       ],
+      [
+        "expo-notifications",
+        {
+          icon: "./assets/images/android-icon-monochrome.png",
+          color: "#2563EB",
+          sounds: [],
+        },
+      ],
     ],
     experiments: {
       typedRoutes: true,

@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { registerDeviceToken, getNotificationPreferences } from '../../../api/user';
 import { captureSentryException } from '../../../monitoring/sentry';
 
@@ -99,6 +100,18 @@ class NotificationService {
         },
       });
 
+      // Configure Android channel for HIGH importance (Heads-up banner alerts)
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'Default',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#2563EB',
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+      }
+
       // 2. Request permissions
       const hasPermission = await this.requestPermissions();
       if (!hasPermission) {
@@ -155,7 +168,15 @@ class NotificationService {
     let finalStatus = existingStatus;
 
     if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
+      const { status } = await Notifications.requestPermissionsAsync({
+        ios: {
+          allowAlert: true,
+          allowBadge: true,
+          allowSound: true,
+          allowDisplayInCarPlay: true,
+          allowCriticalAlerts: true,
+        },
+      });
       finalStatus = status;
     }
 
@@ -169,11 +190,20 @@ class NotificationService {
     try {
       if (Platform.OS === 'web') return;
 
-      // In Expo, getDevicePushTokenAsync retrieves native FCM/APNS token
+      // 1. Generate and log Expo Push Token (if using Expo Push Service)
+      try {
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
+        const expoPushTokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
+        console.log('[NotificationService] Generated Expo Push Token:', expoPushTokenResult.data);
+      } catch (expoErr) {
+        console.log('[NotificationService] Expo Push Token generation bypassed/failed:', expoErr);
+      }
+
+      // 2. Generate and log native device token (FCM for Android, APNs for iOS)
       const tokenResult = await Notifications.getDevicePushTokenAsync();
       const token = tokenResult.data;
 
-      console.log('[NotificationService] Retreived FCM Device token:', token);
+      console.log('[NotificationService] Generated FCM/APNs Device Token:', token);
       await this.saveTokenLocally(token);
 
       await registerDeviceToken({
@@ -181,7 +211,7 @@ class NotificationService {
         deviceType: Platform.OS === 'ios' ? 'ios' : 'android',
       });
     } catch (error) {
-      console.error('[NotificationService] FCM token registration failed:', error);
+      console.error('[NotificationService] Device token registration failed:', error);
       captureSentryException(error, { tags: { area: 'notifications', op: 'register_device' } });
     }
   }
@@ -346,6 +376,7 @@ class NotificationService {
         body,
         sound: prefs.soundEnabled ? 'default' : undefined,
         vibrate: prefs.vibrationEnabled ? [0, 250, 250, 250] : undefined,
+        channelId: 'default',
         data: { voiceMessage, type },
       },
       trigger: null,
