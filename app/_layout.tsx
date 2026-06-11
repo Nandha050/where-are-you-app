@@ -26,7 +26,7 @@ import * as TaskManager from "expo-task-manager";
 import * as Notifications from "expo-notifications";
 import * as Speech from "expo-speech";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { notificationService } from "../src/core/notifications/NotificationService";
+import { notificationService, VOICE_TRANSLATIONS } from "../src/core/notifications/NotificationService";
 import "../src/driver/tracking/BackgroundLocationService";
 
 // Keep splash screen visible while we fetch resources
@@ -95,31 +95,127 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 const BACKGROUND_NOTIFICATION_TASK = "BACKGROUND-NOTIFICATION-TASK";
 
 TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
+  console.log('[Background Notification Task] Background task execution triggered.');
   if (error) {
-    console.error("[Background Notification Task] Error:", error);
+    console.error("[Background Notification Task] TaskManager error:", error);
     return;
   }
 
   try {
     const payload = data as any;
+    console.log('[Background Notification Task] Received background push data payload:', JSON.stringify(payload));
+    
+    // Parse remote push payload data
     const notification = payload?.notification;
-    const voiceMessage =
-      notification?.request?.content?.data?.voiceMessage ||
-      notification?.data?.voiceMessage;
+    const notificationContent = notification?.request?.content;
+    const notificationData = notificationContent?.data || notification?.data || payload?.data;
+    
+    const isLocal = notificationData?.isLocal === true;
+    console.log('[Background Notification Task] parsed notificationData:', JSON.stringify(notificationData), 'isLocal:', isLocal);
 
-    if (voiceMessage) {
-      const local = await AsyncStorage.getItem("@navixgo/notification_preferences");
+    if (!isLocal) {
+      const title = notificationContent?.title || notificationData?.title || payload?.title || 'NavixGo';
+      const body = notificationContent?.body || notificationData?.body || notificationData?.message || payload?.body || 'New update available';
+      const voiceMessage = notificationData?.voiceMessage || body;
+      const type = notificationData?.type || '';
+
+      console.log('[Background Notification Task] Parsed content - Title:', title, 'Body:', body, 'Type:', type);
+
+      // Load user preferences directly from AsyncStorage
+      const prefsKey = "@navixgo/notification_preferences";
+      console.log('[Background Notification Task] Reading user preferences from AsyncStorage at key:', prefsKey);
+      const local = await AsyncStorage.getItem(prefsKey);
       const prefs = local ? JSON.parse(local) : null;
-      const voiceEnabled = prefs ? prefs.voiceEnabled : true;
-      const language = prefs ? prefs.language : "en";
+      console.log('[Background Notification Task] Preferences retrieved:', JSON.stringify(prefs));
+      
+      const soundEnabled = prefs ? prefs.soundEnabled !== false : true;
+      const vibrationEnabled = prefs ? prefs.vibrationEnabled !== false : true;
+      const voiceEnabled = prefs ? prefs.voiceEnabled !== false : true;
+      const language = prefs ? prefs.language || 'en' : 'en';
 
-      if (voiceEnabled) {
-        await Speech.stop();
-        await Speech.speak(voiceMessage, { language, rate: 0.95 });
+      // Check if this type of notification is enabled in the preferences
+      let isTypeEnabled = true;
+      if (type) {
+        const normType = type.toUpperCase().replace(/_/g, '');
+        console.log('[Background Notification Task] Normalized type for checking:', normType);
+        if (normType.includes('NEARSTOP')) {
+          isTypeEnabled = prefs ? prefs.busNearStopEnabled !== false : true;
+        } else if (normType.includes('ARRIVED') || normType.includes('ARRIVE')) {
+          isTypeEnabled = prefs ? prefs.busArrivedEnabled !== false : true;
+        } else if (normType.includes('STARTED') || normType.includes('START')) {
+          isTypeEnabled = prefs ? prefs.tripStartedEnabled !== false : true;
+        } else if (normType.includes('DELAY')) {
+          isTypeEnabled = prefs ? prefs.delayAlertsEnabled !== false : true;
+        }
       }
+      console.log('[Background Notification Task] Notification type enabled status:', isTypeEnabled);
+
+      if (isTypeEnabled) {
+        const channelId = soundEnabled ? 'location-alerts' : 'silent';
+        
+        // If the push has a native visual notification already shown by OS, do not schedule a duplicate local notification.
+        const hasVisualContent = !!(payload?.notification || notificationContent?.title);
+        console.log('[Background Notification Task] hasVisualContent flag:', hasVisualContent);
+
+        if (!hasVisualContent) {
+          console.log('[Background Notification Task] Scheduling local notification. Channel:', channelId, 'Sound:', soundEnabled);
+          try {
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title,
+                body,
+                sound: soundEnabled ? 'default' : undefined,
+                vibrate: vibrationEnabled ? [0, 250, 250, 250] : undefined,
+                channelId,
+                data: { ...notificationData, isLocal: true },
+              },
+              trigger: null,
+            });
+            console.log('[Background Notification Task] Local notification scheduled successfully.');
+          } catch (schErr) {
+            console.error('[Background Notification Task] Failed to schedule local notification:', schErr);
+          }
+        } else {
+          console.log('[Background Notification Task] Native visual content already exists. Suppressing duplicate local notification.');
+        }
+
+        // Trigger TTS voice announcement
+        if (voiceEnabled) {
+          let textToSpeak = voiceMessage;
+          const translations = VOICE_TRANSLATIONS[language as any] || VOICE_TRANSLATIONS.en;
+          
+          const normType = type.toUpperCase().replace(/_/g, '');
+          if (normType.includes('NEARSTOP')) {
+            textToSpeak = translations.busNearStop;
+          } else if (normType.includes('ARRIVED')) {
+            textToSpeak = translations.busArrived;
+          } else if (normType.includes('STARTED')) {
+            textToSpeak = translations.tripStarted;
+          } else if (normType.includes('DELAY')) {
+            textToSpeak = translations.delayAlerts;
+          }
+
+          console.log('[Background Notification Task] TTS active. Speaking text:', textToSpeak);
+          if (textToSpeak) {
+            try {
+              await Speech.stop();
+              await Speech.speak(textToSpeak, { language, rate: 0.95 });
+              console.log('[Background Notification Task] TTS speak call initiated.');
+            } catch (speechErr) {
+              console.error('[Background Notification Task] TTS speaking failed:', speechErr);
+            }
+          }
+        } else {
+          console.log('[Background Notification Task] TTS voice disabled in preferences. Skipping speech.');
+        }
+      } else {
+        console.log('[Background Notification Task] Notification type disabled by user settings. Skipping display/sound/speech.');
+      }
+    } else {
+      console.log('[Background Notification Task] Ignored local loop notification.');
     }
   } catch (err) {
-    console.error("[Background Notification Task] Execution failed:", err);
+    console.error("[Background Notification Task] Execution failed with fatal exception:", err);
   }
 });
 
@@ -145,19 +241,42 @@ export default Sentry.wrap(function RootLayout() {
 
   // Handle deep linking from notification taps
   useEffect(() => {
+    console.log('[RootLayout][DeepLink] Registering notification response received listener...');
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data;
+      console.log('[RootLayout][DeepLink] Notification response received:', JSON.stringify(response));
+      const actionIdentifier = response.actionIdentifier;
+      const notification = response.notification;
+      const data = notification.request.content.data;
+      const title = notification.request.content.title;
+      const body = notification.request.content.body;
+      
+      console.log('[RootLayout][DeepLink] User tapped notification:', {
+        actionIdentifier,
+        title,
+        body,
+        data: JSON.stringify(data),
+      });
+
       const busId = data?.busId;
       const tripId = data?.tripId;
       if (busId || tripId) {
-        router.push({
-          pathname: "/(user)/tracking",
-          params: { busId, tripId },
-        } as any);
+        console.log('[RootLayout][DeepLink] Navigating to tracking screen with params:', { busId, tripId });
+        try {
+          router.push({
+            pathname: "/(user)/tracking",
+            params: { busId, tripId },
+          } as any);
+          console.log('[RootLayout][DeepLink] Navigation successful.');
+        } catch (navErr) {
+          console.error('[RootLayout][DeepLink] Navigation failed:', navErr);
+        }
+      } else {
+        console.log('[RootLayout][DeepLink] No busId or tripId found in notification data. Bypassing navigation.');
       }
     });
 
     return () => {
+      console.log('[RootLayout][DeepLink] Unmounting notification response received listener.');
       subscription.remove();
     };
   }, []);

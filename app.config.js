@@ -1,5 +1,7 @@
 const GOOGLE_MAPS_API_KEY =
-  process.env.GOOGLE_MAPS_API_KEY ?? process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+  process.env.GOOGLE_MAPS_API_KEY ??
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ??
+  "";
 
 export default {
   expo: {
@@ -18,6 +20,7 @@ export default {
     ios: {
       bundleIdentifier: "com.maruthikummari.whereareyoulive",
       supportsTablet: true,
+      googleServicesFile: "./GoogleService-Info.plist",
       infoPlist: {
         NSLocationWhenInUseUsageDescription:
           "We need your location to track the bus in real-time",
@@ -33,6 +36,11 @@ export default {
     },
     android: {
       package: "com.maruthikummari.whereareyoulive",
+      googleServicesFile: "./google-services.json",
+      metaData: {
+        "com.google.firebase.messaging.default_notification_channel_id": "location-alerts",
+      },
+
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
         foregroundImage: "./assets/images/android-icon-foreground.png",

@@ -172,7 +172,7 @@ export default function UserAlertsScreen() {
                 No notifications yet
               </Text>
               <Text className="text-xs text-slate-400 mt-1 text-center">
-                We'll notify you when there's an update regarding your bus trip.
+                We&apos;ll notify you when there&apos;s an update regarding your bus trip.
               </Text>
             </View>
           ) : (
