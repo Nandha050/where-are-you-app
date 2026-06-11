@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "369105846422",
+    "project_id": "navixgo-17d32",
+    "storage_bucket": "navixgo-17d32.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:369105846422:android:71c541b43895e82c1802b7",
+        "android_client_info": {
+          "package_name": "com.maruthikummari.whereareyoulive"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyApSUlUNzba4v7nreYjPnCdTmtV2yRfuiw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

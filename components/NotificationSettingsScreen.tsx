@@ -297,7 +297,7 @@ export const NotificationSettingsScreen: React.FC = () => {
                         </Pressable>
                     </View>
                     <Text style={{ fontSize: 11, color: "#94A3B8", marginTop: 12, lineHeight: 16, fontFamily: "Poppins_400Regular" }}>
-                        Arrival alerts are calculated strictly using this assigned stop, not your device's live GPS.
+                        Arrival alerts are calculated strictly using this assigned stop, not your device&apos;s live GPS.
                     </Text>
                 </View>
 
