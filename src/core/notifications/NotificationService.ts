@@ -1,16 +1,20 @@
-import * as Notifications from 'expo-notifications';
-import * as Speech from 'expo-speech';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
-import Constants from 'expo-constants';
-import { registerDeviceToken, patchUserFcmToken, getNotificationPreferences } from '../../../api/user';
-import { captureSentryException } from '../../../monitoring/sentry';
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
+import * as Notifications from "expo-notifications";
+import * as Speech from "expo-speech";
+import { Platform } from "react-native";
+import {
+  getNotificationPreferences,
+  patchUserFcmToken,
+  registerDeviceToken,
+} from "../../../api/user";
+import { captureSentryException } from "../../../monitoring/sentry";
 
-const PREFS_KEY = '@navixgo/notification_preferences';
-const FCM_TOKEN_KEY = '@navixgo/fcm_token';
-const ASSIGNED_STOP_KEY = '@navixgo/assigned_stop';
+const PREFS_KEY = "@navixgo/notification_preferences";
+const FCM_TOKEN_KEY = "@navixgo/fcm_token";
+const ASSIGNED_STOP_KEY = "@navixgo/assigned_stop";
 
-export type LanguageCode = 'en' | 'te' | 'hi';
+export type LanguageCode = "en" | "te" | "hi";
 
 export interface NotificationPrefs {
   busNearStopEnabled: boolean;
@@ -35,31 +39,37 @@ export const DEFAULT_PREFS: NotificationPrefs = {
   voiceEnabled: true,
   alertBeforeArrivalEnabled: true,
   alertBeforeArrivalMinutes: 5,
-  language: 'en',
+  language: "en",
 };
 
 // Extensible Multi-lingual Announcements
-export const VOICE_TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
+export const VOICE_TRANSLATIONS: Record<
+  LanguageCode,
+  Record<string, string>
+> = {
   en: {
-    busNearStop: 'Your bus is approaching your stop. Please be ready. This is a sample notification.',
-    busArrived: 'Your bus has arrived at your stop.',
-    tripStarted: 'Your bus has started and is on the way.',
-    delayAlerts: 'Your bus is running behind schedule.',
-    testNotice: 'This is how your notifications will appear.',
+    busNearStop:
+      "Your bus is approaching your stop. Please be ready. This is a sample notification.",
+    busArrived: "Your bus has arrived at your stop.",
+    tripStarted: "Your bus has started and is on the way.",
+    delayAlerts: "Your bus is running behind schedule.",
+    testNotice: "This is how your notifications will appear.",
   },
   te: {
-    busNearStop: 'మీ బస్సు మీ స్టాప్ దగ్గరకు వస్తోంది. దయచేసి సిద్ధంగా ఉండండి. ఇది ఒక నమూనా నోటిఫिकేషన్.',
-    busArrived: 'మీ బస్సు మీ స్టాప్‌కు చేరుకుంది.',
-    tripStarted: 'మీ బస్సు ప్రయాణం ప్రారంభమైంది మరియు దారిలో ఉంది.',
-    delayAlerts: 'మీ బస్సు నిర్ణీत సమయం కంటే ఆలస్యంగా నడుస్తోంది.',
-    testNotice: 'మీ నోటిఫికేషన్‌లు ఈ విధంగా కనిపిస్తాయి.',
+    busNearStop:
+      "మీ బస్సు మీ స్టాప్ దగ్గరకు వస్తోంది. దయచేసి సిద్ధంగా ఉండండి. ఇది ఒక నమూనా నోటిఫिकేషన్.",
+    busArrived: "మీ బస్సు మీ స్టాప్‌కు చేరుకుంది.",
+    tripStarted: "మీ బస్సు ప్రయాణం ప్రారంభమైంది మరియు దారిలో ఉంది.",
+    delayAlerts: "మీ బస్సు నిర్ణీत సమయం కంటే ఆలస్యంగా నడుస్తోంది.",
+    testNotice: "మీ నోటిఫికేషన్‌లు ఈ విధంగా కనిపిస్తాయి.",
   },
   hi: {
-    busNearStop: 'आपकी बस आपके स्टॉप के पास आ रही है। कृपया तैयार रहें। यह एक नमूना अधिसूचना है।',
-    busArrived: 'आपकी बस आपके स्टॉप पर पहुंच गई है।',
-    tripStarted: 'आपकी बस शुरू हो चुकी है और रास्ते में है।',
-    delayAlerts: 'आपकी बस अपने निर्धारित समय से देरी से चल रही है।',
-    testNotice: 'आपकी अधिसूचनाएं इस प्रकार दिखाई देंगी।',
+    busNearStop:
+      "आपकी बस आपके स्टॉप के पास आ रही है। कृपया तैयार रहें। यह एक नमूना अधिसूचना है।",
+    busArrived: "आपकी बस आपके स्टॉप पर पहुंच गई है।",
+    tripStarted: "आपकी बस शुरू हो चुकी है और रास्ते में है।",
+    delayAlerts: "आपकी बस अपने निर्धारित समय से देरी से चल रही है।",
+    testNotice: "आपकी अधिसूचनाएं इस प्रकार दिखाई देंगी।",
   },
 };
 
@@ -89,46 +99,122 @@ class NotificationService {
 
     try {
       // 1. Setup handler for foreground notifications dynamically respecting settings
+      // [CHANNEL CREATED] Log initialization
+      console.log("[NOTIFICATION HANDLER REGISTERED] Setting up handler for SDK 54");
       Notifications.setNotificationHandler({
-        handleNotification: async () => {
+        handleNotification: async (notification) => {
           const prefs = await this.getPreferences();
+          console.log("[NOTIFICATION HANDLER] Handling incoming foreground notification:", JSON.stringify(notification));
           return {
-            shouldShowAlert: true,
+            shouldShowBanner: true,
+            shouldShowList: true,
             shouldPlaySound: prefs.soundEnabled,
-            shouldVibrate: prefs.vibrationEnabled,
+            shouldSetBadge: true,
           };
         },
       });
 
       // Configure Android channels
-      if (Platform.OS === 'android') {
-        // High importance channel with sound & vibration
-        await Notifications.setNotificationChannelAsync('default', {
-          name: 'Alerts with Sound & Vibration',
+      if (Platform.OS === "android") {
+        // 1. High importance channel with sound & vibration
+        await Notifications.setNotificationChannelAsync("default", {
+          name: "Alerts with Sound & Vibration",
           importance: Notifications.AndroidImportance.MAX,
-          sound: 'default',
+          sound: "default",
           enableVibrate: true,
           vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#2563EB',
+          lightColor: "#2563EB",
           bypassDnd: true,
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
         });
+        console.log("[CHANNEL CREATED] default channel created with MAX importance, sound, and vibration");
 
-        // High importance channel but silent (no sound, no vibration)
-        await Notifications.setNotificationChannelAsync('silent', {
-          name: 'Silent Alerts',
+        // 2. Sound only channel
+        await Notifications.setNotificationChannelAsync("sound_only", {
+          name: "Sound Only Alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          sound: "default",
+          enableVibrate: false,
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+        console.log("[CHANNEL CREATED] sound_only channel created with MAX importance, sound configuration");
+
+        // 3. Vibration only channel
+        await Notifications.setNotificationChannelAsync("vibration_only", {
+          name: "Vibration Only Alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          sound: null,
+          enableVibrate: true,
+          vibrationPattern: [0, 250, 250, 250],
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+        console.log("[CHANNEL CREATED] vibration_only channel created with MAX importance, vibration configuration");
+
+        // 4. Silent channel
+        await Notifications.setNotificationChannelAsync("silent", {
+          name: "Silent Alerts",
           importance: Notifications.AndroidImportance.MAX,
           sound: null,
           enableVibrate: false,
           bypassDnd: true,
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
         });
+        console.log("[CHANNEL CREATED] silent channel created with MAX importance, silent configuration");
+
+        // 5. Critical channel
+        await Notifications.setNotificationChannelAsync("critical", {
+          name: "Critical Alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          sound: "default",
+          enableVibrate: true,
+          vibrationPattern: [0, 500, 250, 500],
+          lightColor: "#EF4444",
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+        console.log("[CHANNEL CREATED] critical channel created with MAX importance, custom vibration and red light");
+
+        // 6. Map constants for backend payloads
+        await Notifications.setNotificationChannelAsync("location-alerts", {
+          name: "Location Alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          sound: "default",
+          enableVibrate: true,
+          vibrationPattern: [0, 250, 250, 250],
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+        console.log("[CHANNEL CREATED] location-alerts channel created");
+
+        await Notifications.setNotificationChannelAsync("location-critical", {
+          name: "Location Critical Alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          sound: "default",
+          enableVibrate: true,
+          vibrationPattern: [0, 500, 250, 500],
+          lightColor: "#EF4444",
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+        console.log("[CHANNEL CREATED] location-critical channel created");
+
+        await Notifications.setNotificationChannelAsync("location-tracking", {
+          name: "Location Tracking Active",
+          importance: Notifications.AndroidImportance.LOW,
+          sound: null,
+          enableVibrate: false,
+          bypassDnd: false,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.SECRET,
+        });
+        console.log("[CHANNEL CREATED] location-tracking channel created");
       }
 
       // 2. Request permissions
       const hasPermission = await this.requestPermissions();
       if (!hasPermission) {
-        console.log('[NotificationService] Permissions not granted');
+        console.log("[NotificationService] Permissions not granted");
         return;
       }
 
@@ -137,66 +223,86 @@ class NotificationService {
 
       // 4. Listen to token refreshes
       Notifications.addPushTokenListener(async (token) => {
-        console.log('[NotificationService] Push token rotated:', token.data);
+        console.log("[NotificationService] Push token rotated:", token.data);
         await this.saveTokenLocally(token.data);
         try {
           await registerDeviceToken({
             deviceToken: token.data,
-            deviceType: Platform.OS === 'ios' ? 'ios' : 'android',
+            deviceType: Platform.OS === "ios" ? "ios" : "android",
           });
         } catch (err) {
-          captureSentryException(err, { tags: { area: 'notifications', op: 'token_rotate' } });
+          captureSentryException(err, {
+            tags: { area: "notifications", op: "token_rotate" },
+          });
         }
       });
 
       // 5. Add foreground message listener for TTS voice announcements
       Notifications.addNotificationReceivedListener(async (notification) => {
-        console.log('[NotificationService] Foreground notification received:', JSON.stringify(notification));
-        const data = notification.request.content.data;
+        const data = (notification.request.content.data || {}) as any;
         const isLocal = data?.isLocal === true;
+
+        console.log(
+          isLocal 
+            ? `[LOCAL NOTIFICATION CREATED] Local notification triggered foreground listener: ${notification.request.identifier}`
+            : `[FCM FOREGROUND RECEIVED] Remote push notification received in foreground: ${JSON.stringify(notification)}`
+        );
 
         if (!isLocal) {
           const prefs = await this.getPreferences();
-          const type = data?.type || '';
-          
+          const type = data?.type || "";
+
           // Check if alerts for this type are enabled
           const isEnabled = this.isNotificationTypeEnabled(type, prefs);
           if (isEnabled) {
             // Schedule local notification to display in the notification bar
-            const title = notification.request.content.title || data?.title || 'NavixGo';
-            const body = notification.request.content.body || data?.body || data?.message || 'New update available';
+            const title =
+              notification.request.content.title || data?.title || "NavixGo";
+            const body =
+              notification.request.content.body ||
+              data?.body ||
+              data?.message ||
+              "New update available";
             const voiceMessage = data?.voiceMessage || body;
-            
-            const channelId = prefs.soundEnabled ? 'default' : 'silent';
 
+             const channelId = prefs.soundEnabled 
+              ? (prefs.vibrationEnabled ? "default" : "sound_only")
+              : (prefs.vibrationEnabled ? "vibration_only" : "silent");
+
+            // Add 1-second offset to avoid date-in-the-past race condition on Android
+            const triggerDate = new Date(Date.now() + 1000);
+
+            console.log(`[LOCAL NOTIFICATION CREATED] Scheduling local notification with 1s offset. Channel: ${channelId}`);
             await Notifications.scheduleNotificationAsync({
               content: {
                 title,
                 body,
-                sound: prefs.soundEnabled ? 'default' : undefined,
+                sound: prefs.soundEnabled ? "default" : undefined,
                 data: { ...data, isLocal: true },
               },
               trigger: {
                 type: Notifications.SchedulableTriggerInputTypes.DATE,
-                date: new Date(),
+                date: triggerDate,
                 channelId,
               },
             });
+            console.log("[NOTIFICATION DISPLAYED] Local notification scheduled successfully");
 
             // Speak voice message
             if (prefs.voiceEnabled) {
               let textToSpeak = voiceMessage;
               const lang = prefs.language;
-              const translations = VOICE_TRANSLATIONS[lang] || VOICE_TRANSLATIONS.en;
-              
-              const normType = type.toUpperCase().replace(/_/g, '');
-              if (normType.includes('NEARSTOP')) {
+              const translations =
+                VOICE_TRANSLATIONS[lang] || VOICE_TRANSLATIONS.en;
+
+              const normType = type.toUpperCase().replace(/_/g, "");
+              if (normType.includes("NEARSTOP")) {
                 textToSpeak = translations.busNearStop;
-              } else if (normType.includes('ARRIVED')) {
+              } else if (normType.includes("ARRIVED")) {
                 textToSpeak = translations.busArrived;
-              } else if (normType.includes('STARTED')) {
+              } else if (normType.includes("STARTED")) {
                 textToSpeak = translations.tripStarted;
-              } else if (normType.includes('DELAY')) {
+              } else if (normType.includes("DELAY")) {
                 textToSpeak = translations.delayAlerts;
               }
 
@@ -204,15 +310,19 @@ class NotificationService {
                 await this.speak(textToSpeak);
               }
             }
+          } else {
+            console.log(`[NotificationService] Notification type ${type} is disabled in preferences`);
           }
         }
       });
 
       this.isInitialized = true;
-      console.log('[NotificationService] Initialized successfully');
+      console.log("[NotificationService] Initialized successfully");
     } catch (error) {
-      console.error('[NotificationService] Init failed:', error);
-      captureSentryException(error, { tags: { area: 'notifications', op: 'init' } });
+      console.error("[NotificationService] Init failed:", error);
+      captureSentryException(error, {
+        tags: { area: "notifications", op: "init" },
+      });
     }
   }
 
@@ -220,12 +330,13 @@ class NotificationService {
    * Request push notification permissions
    */
   async requestPermissions(): Promise<boolean> {
-    if (Platform.OS === 'web') return false;
+    if (Platform.OS === "web") return false;
 
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    const { status: existingStatus } =
+      await Notifications.getPermissionsAsync();
     let finalStatus = existingStatus;
 
-    if (existingStatus !== 'granted') {
+    if (existingStatus !== "granted") {
       const { status } = await Notifications.requestPermissionsAsync({
         ios: {
           allowAlert: true,
@@ -238,7 +349,7 @@ class NotificationService {
       finalStatus = status;
     }
 
-    return finalStatus === 'granted';
+    return finalStatus === "granted";
   }
 
   /**
@@ -246,40 +357,61 @@ class NotificationService {
    */
   async registerDevice(): Promise<void> {
     try {
-      if (Platform.OS === 'web') return;
+      if (Platform.OS === "web") return;
 
       // 1. Generate and log Expo Push Token (if using Expo Push Service)
       try {
-        const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
-        const expoPushTokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
-        console.log('[NotificationService] Generated Expo Push Token:', expoPushTokenResult.data);
+        const projectId =
+          Constants.expoConfig?.extra?.eas?.projectId ||
+          Constants.easConfig?.projectId;
+        const expoPushTokenResult = await Notifications.getExpoPushTokenAsync({
+          projectId,
+        });
+        console.log(
+          "[NotificationService] Generated Expo Push Token:",
+          expoPushTokenResult.data,
+        );
       } catch (expoErr) {
-        console.log('[NotificationService] Expo Push Token generation bypassed/failed:', expoErr);
+        console.log(
+          "[NotificationService] Expo Push Token generation bypassed/failed:",
+          expoErr,
+        );
       }
 
       // 2. Generate and log native device token (FCM for Android, APNs for iOS)
       const tokenResult = await Notifications.getDevicePushTokenAsync();
       const token = tokenResult.data;
 
-      console.log('[NotificationService] Generated FCM/APNs Device Token:', token);
+      console.log(
+        "[NotificationService] Generated FCM/APNs Device Token:",
+        token,
+      );
       await this.saveTokenLocally(token);
 
       // 3. Register via notifications endpoint
       await registerDeviceToken({
         deviceToken: token,
-        deviceType: Platform.OS === 'ios' ? 'ios' : 'android',
+        deviceType: Platform.OS === "ios" ? "ios" : "android",
       });
 
       // 4. Also sync FCM token to user profile endpoint
       try {
         await patchUserFcmToken(String(token));
-        console.log('[NotificationService] FCM token synced to user profile');
+        console.log("[NotificationService] FCM token synced to user profile");
       } catch (profileErr) {
-        console.log('[NotificationService] FCM token profile sync failed (non-fatal):', profileErr);
+        console.log(
+          "[NotificationService] FCM token profile sync failed (non-fatal):",
+          profileErr,
+        );
       }
     } catch (error) {
-      console.error('[NotificationService] Device token registration failed:', error);
-      captureSentryException(error, { tags: { area: 'notifications', op: 'register_device' } });
+      console.error(
+        "[NotificationService] Device token registration failed:",
+        error,
+      );
+      captureSentryException(error, {
+        tags: { area: "notifications", op: "register_device" },
+      });
     }
   }
 
@@ -313,21 +445,47 @@ class NotificationService {
           const merged = {
             ...DEFAULT_PREFS,
             ...localPrefs,
-            busNearStopEnabled: response.busNearStopEnabled ?? response.busNearStop ?? DEFAULT_PREFS.busNearStopEnabled,
-            busArrivedEnabled: response.busArrivedEnabled ?? response.busArrived ?? DEFAULT_PREFS.busArrivedEnabled,
-            tripStartedEnabled: response.tripStartedEnabled ?? response.tripStarted ?? DEFAULT_PREFS.tripStartedEnabled,
-            delayAlertsEnabled: response.delayAlertsEnabled ?? response.delayAlert ?? DEFAULT_PREFS.delayAlertsEnabled,
-            soundEnabled: response.soundEnabled ?? response.sound ?? DEFAULT_PREFS.soundEnabled,
-            vibrationEnabled: response.vibrationEnabled ?? response.vibration ?? DEFAULT_PREFS.vibrationEnabled,
-            voiceEnabled: response.voiceEnabled ?? response.voice ?? DEFAULT_PREFS.voiceEnabled,
-            alertBeforeArrivalEnabled: response.alertBeforeArrivalEnabled ?? response.alertBeforeArrival ?? DEFAULT_PREFS.alertBeforeArrivalEnabled,
+            busNearStopEnabled:
+              response.busNearStopEnabled ??
+              response.busNearStop ??
+              DEFAULT_PREFS.busNearStopEnabled,
+            busArrivedEnabled:
+              response.busArrivedEnabled ??
+              response.busArrived ??
+              DEFAULT_PREFS.busArrivedEnabled,
+            tripStartedEnabled:
+              response.tripStartedEnabled ??
+              response.tripStarted ??
+              DEFAULT_PREFS.tripStartedEnabled,
+            delayAlertsEnabled:
+              response.delayAlertsEnabled ??
+              response.delayAlert ??
+              DEFAULT_PREFS.delayAlertsEnabled,
+            soundEnabled:
+              response.soundEnabled ??
+              response.sound ??
+              DEFAULT_PREFS.soundEnabled,
+            vibrationEnabled:
+              response.vibrationEnabled ??
+              response.vibration ??
+              DEFAULT_PREFS.vibrationEnabled,
+            voiceEnabled:
+              response.voiceEnabled ??
+              response.voice ??
+              DEFAULT_PREFS.voiceEnabled,
+            alertBeforeArrivalEnabled:
+              response.alertBeforeArrivalEnabled ??
+              response.alertBeforeArrival ??
+              DEFAULT_PREFS.alertBeforeArrivalEnabled,
           };
           await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(merged));
           return merged;
         }
       } catch (apiErr) {
         // Fallback silently to local storage
-        console.log('[NotificationService] Preferences API offline, using local copy');
+        console.log(
+          "[NotificationService] Preferences API offline, using local copy",
+        );
       }
 
       return localPrefs || DEFAULT_PREFS;
@@ -342,13 +500,16 @@ class NotificationService {
   async savePreferences(prefs: NotificationPrefs): Promise<void> {
     try {
       await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-      
+
       // Architecture preparation for backend sync:
       // In production we would sync using:
       // await apiClient.put('/api/notifications/preferences', prefs);
-      console.log('[NotificationService] Preferences saved locally and queued for backend sync:', prefs);
+      console.log(
+        "[NotificationService] Preferences saved locally and queued for backend sync:",
+        prefs,
+      );
     } catch (error) {
-      console.error('[NotificationService] Save preferences failed:', error);
+      console.error("[NotificationService] Save preferences failed:", error);
     }
   }
 
@@ -359,17 +520,21 @@ class NotificationService {
     try {
       const prefs = await this.getPreferences();
       if (!prefs.voiceEnabled) {
+        console.log(`[NotificationService] Voice announcements disabled, skipping speech: "${text}"`);
         return;
       }
 
+      console.log(`[VOICE STARTED] Starting Text-to-Speech: "${text}"`);
       await Speech.stop(); // Stop any current speech
-      await Speech.speak(text, {
+      Speech.speak(text, {
         language: prefs.language,
         rate: 0.95,
+        onStart: () => console.log("[VOICE STARTED] Speech started outputting audio"),
+        onError: (err) => console.error("[VOICE FAILED] Speech output failed:", err),
+        onDone: () => console.log("[NotificationService] Speech finished successfully")
       });
-      console.log('[NotificationService] Speaking:', text);
     } catch (error) {
-      console.error('[NotificationService] Speech failed:', error);
+      console.error("[VOICE FAILED] Speech speak call failed:", error);
     }
   }
 
@@ -380,23 +545,23 @@ class NotificationService {
     const prefs = await this.getPreferences();
     const lang = prefs.language;
     const translations = VOICE_TRANSLATIONS[lang] || VOICE_TRANSLATIONS.en;
-    let message = '';
+    let message = "";
 
     switch (type.toLowerCase()) {
-      case 'busnearstop':
-      case 'near_stop':
+      case "busnearstop":
+      case "near_stop":
         message = translations.busNearStop;
         break;
-      case 'busarrived':
-      case 'arrived':
+      case "busarrived":
+      case "arrived":
         message = translations.busArrived;
         break;
-      case 'tripstarted':
-      case 'trip_started':
+      case "tripstarted":
+      case "trip_started":
         message = translations.tripStarted;
         break;
-      case 'delayalerts':
-      case 'delay':
+      case "delayalerts":
+      case "delay":
         message = translations.delayAlerts;
         break;
       default:
@@ -411,46 +576,52 @@ class NotificationService {
   /**
    * Show a local test notification and play voice announcement
    */
-  async triggerTestNotification(type: keyof typeof DEFAULT_PREFS): Promise<void> {
+  async triggerTestNotification(
+    type: keyof typeof DEFAULT_PREFS,
+  ): Promise<void> {
     const prefs = await this.getPreferences();
     const lang = prefs.language;
     const translations = VOICE_TRANSLATIONS[lang] || VOICE_TRANSLATIONS.en;
-    
-    let title = 'NavixGo';
-    let body = translations.testNotice;
-    let voiceMessage = '';
 
-    if (type === 'busNearStopEnabled') {
-      body = 'This is how Bus Near My Stop notifications will appear.';
+    let title = "NavixGo";
+    let body = translations.testNotice;
+    let voiceMessage = "";
+
+    if (type === "busNearStopEnabled") {
+      body = "This is how Bus Near My Stop notifications will appear.";
       voiceMessage = translations.busNearStop;
-    } else if (type === 'busArrivedEnabled') {
-      body = 'This is how Bus Arrived notifications will appear.';
+    } else if (type === "busArrivedEnabled") {
+      body = "This is how Bus Arrived notifications will appear.";
       voiceMessage = translations.busArrived;
-    } else if (type === 'tripStartedEnabled') {
-      body = 'This is how Trip Started notifications will appear.';
+    } else if (type === "tripStartedEnabled") {
+      body = "This is how Trip Started notifications will appear.";
       voiceMessage = translations.tripStarted;
-    } else if (type === 'delayAlertsEnabled') {
-      body = 'This is how Delay Alerts notifications will appear.';
+    } else if (type === "delayAlertsEnabled") {
+      body = "This is how Delay Alerts notifications will appear.";
       voiceMessage = translations.delayAlerts;
     } else {
-      voiceMessage = 'This is a sample voice notification.';
+      voiceMessage = "This is a sample voice notification.";
     }
 
     // Respect sound/vibration preferences in scheduled local notification
-    const testChannelId = prefs.soundEnabled ? 'default' : 'silent';
+    const testChannelId = prefs.soundEnabled ? "default" : "silent";
+    const triggerDate = new Date(Date.now() + 1000); // 1s offset
+
+    console.log(`[LOCAL NOTIFICATION CREATED] Triggering test notification: "${body}". Channel: ${testChannelId}`);
     await Notifications.scheduleNotificationAsync({
       content: {
         title,
         body,
-        sound: prefs.soundEnabled ? 'default' : undefined,
-        data: { voiceMessage, type },
+        sound: prefs.soundEnabled ? "default" : undefined,
+        data: { voiceMessage, type, isLocal: true },
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
-        date: new Date(),
+        date: triggerDate,
         channelId: testChannelId,
       },
     });
+    console.log("[NOTIFICATION DISPLAYED] Test notification scheduled successfully");
 
     // Voice announcement immediately
     await this.speak(voiceMessage);
@@ -461,21 +632,21 @@ class NotificationService {
    */
   isNotificationTypeEnabled(type: string, prefs: NotificationPrefs): boolean {
     if (!type) return true;
-    const normType = type.toUpperCase().replace(/_/g, '');
-    
-    if (normType.includes('NEARSTOP') || normType.includes('NEAR_STOP')) {
+    const normType = type.toUpperCase().replace(/_/g, "");
+
+    if (normType.includes("NEARSTOP") || normType.includes("NEAR_STOP")) {
       return prefs.busNearStopEnabled;
     }
-    if (normType.includes('ARRIVED') || normType.includes('ARRIVE')) {
+    if (normType.includes("ARRIVED") || normType.includes("ARRIVE")) {
       return prefs.busArrivedEnabled;
     }
-    if (normType.includes('STARTED') || normType.includes('START')) {
+    if (normType.includes("STARTED") || normType.includes("START")) {
       return prefs.tripStartedEnabled;
     }
-    if (normType.includes('DELAY')) {
+    if (normType.includes("DELAY")) {
       return prefs.delayAlertsEnabled;
     }
-    
+
     return true; // Default to true for other types
   }
 

@@ -26,7 +26,7 @@ import * as TaskManager from "expo-task-manager";
 import * as Notifications from "expo-notifications";
 import * as Speech from "expo-speech";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { notificationService, VOICE_TRANSLATIONS } from "../src/core/notifications/NotificationService";
+import { notificationService, VOICE_TRANSLATIONS, type LanguageCode } from "../src/core/notifications/NotificationService";
 import "../src/driver/tracking/BackgroundLocationService";
 
 // Keep splash screen visible while we fetch resources
@@ -102,7 +102,7 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
 
   try {
     const payload = data as any;
-    console.log('[Background Notification Task] Received background push data:', JSON.stringify(payload));
+    console.log('[FCM BACKGROUND RECEIVED] Received background push data:', JSON.stringify(payload));
     
     // Parse remote push payload data
     const notification = payload?.notification;
@@ -142,8 +142,14 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
       }
 
       if (isTypeEnabled) {
-        const channelId = soundEnabled ? 'default' : 'silent';
+        const channelId = soundEnabled 
+          ? (vibrationEnabled ? 'default' : 'sound_only')
+          : (vibrationEnabled ? 'vibration_only' : 'silent');
 
+        // Add 1-second offset to avoid date-in-the-past race condition on Android
+        const triggerDate = new Date(Date.now() + 1000);
+
+        console.log(`[LOCAL NOTIFICATION CREATED] [BACKGROUND] Scheduling local notification with 1s offset. Channel: ${channelId}`);
         // Schedule local notification to display in the Android notification bar
         await Notifications.scheduleNotificationAsync({
           content: {
@@ -154,15 +160,16 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
           },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
-            date: new Date(),
+            date: triggerDate,
             channelId,
           },
         });
+        console.log("[NOTIFICATION DISPLAYED] [BACKGROUND] Local notification displayed successfully");
 
         // Trigger TTS voice announcement
         if (voiceEnabled) {
           let textToSpeak = voiceMessage;
-          const translations = VOICE_TRANSLATIONS[language as any] || VOICE_TRANSLATIONS.en;
+          const translations = VOICE_TRANSLATIONS[language as LanguageCode] || VOICE_TRANSLATIONS.en;
           
           const normType = type.toUpperCase().replace(/_/g, '');
           if (normType.includes('NEARSTOP')) {
@@ -176,10 +183,23 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
           }
 
           if (textToSpeak) {
-            await Speech.stop();
-            await Speech.speak(textToSpeak, { language, rate: 0.95 });
+            console.log(`[VOICE STARTED] [BACKGROUND] Starting Text-to-Speech: "${textToSpeak}"`);
+            try {
+              await Speech.stop();
+              Speech.speak(textToSpeak, { 
+                language, 
+                rate: 0.95,
+                onStart: () => console.log("[VOICE STARTED] [BACKGROUND] Speech started outputting audio"),
+                onError: (err) => console.error("[VOICE FAILED] [BACKGROUND] Speech output failed:", err),
+                onDone: () => console.log("[Background Notification Task] Speech completed successfully")
+              });
+            } catch (speechErr) {
+              console.error("[VOICE FAILED] [BACKGROUND] Speech speak call failed:", speechErr);
+            }
           }
         }
+      } else {
+        console.log(`[Background Notification Task] Notification type ${type} is disabled in preferences`);
       }
     }
   } catch (err) {
@@ -209,16 +229,42 @@ export default Sentry.wrap(function RootLayout() {
 
   // Handle deep linking from notification taps
   useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    // 1. Handle notification that launched the app (Killed state)
+    const checkLastNotification = async () => {
+      try {
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (response) {
+          console.log("[NOTIFICATION LAUNCHED] App launched from killed state via notification:", JSON.stringify(response));
+          handleNotificationTap(response);
+        }
+      } catch (err) {
+        console.error("[NOTIFICATION LAUNCHED] Failed to check last notification:", err);
+      }
+    };
+
+    const handleNotificationTap = (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data;
       const busId = data?.busId;
       const tripId = data?.tripId;
       if (busId || tripId) {
-        router.push({
-          pathname: "/(user)/tracking",
-          params: { busId, tripId },
-        } as any);
+        console.log(`[DEEP LINK] Navigating to tracking with busId=${busId}, tripId=${tripId}`);
+        // Ensure navigation structure is ready
+        setTimeout(() => {
+          router.push({
+            pathname: "/(user)/tracking",
+            params: { busId, tripId },
+          } as any);
+        }, 500);
       }
+    };
+
+    // Run the check for killed-state launch
+    void checkLastNotification();
+
+    // 2. Handle notification interactions while the app is running
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      console.log("[NOTIFICATION TAP] Notification tapped in foreground/background:", JSON.stringify(response));
+      handleNotificationTap(response);
     });
 
     return () => {
