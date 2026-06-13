@@ -3,7 +3,7 @@ import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { registerDeviceToken, getNotificationPreferences } from '../../../api/user';
+import { registerDeviceToken, patchUserFcmToken, getNotificationPreferences } from '../../../api/user';
 import { captureSentryException } from '../../../monitoring/sentry';
 
 const PREFS_KEY = '@navixgo/notification_preferences';
@@ -80,27 +80,18 @@ class NotificationService {
   /**
    * Initialize notification handlers, check permissions, and register FCM token
    */
-  /**
-   * Initialize notification handlers, check permissions, and register FCM token
-   */
   async init(userId: string): Promise<void> {
-    console.log('[NotificationService][Init] Starting notification initialization for user:', userId);
     this.currentUserId = userId;
 
     if (this.isInitialized) {
-      console.log('[NotificationService][Init] NotificationService is already initialized. Skipping.');
       return;
     }
 
     try {
       // 1. Setup handler for foreground notifications dynamically respecting settings
-      console.log('[NotificationService][Init] Configuring foreground notification handler...');
       Notifications.setNotificationHandler({
-        handleNotification: async (notification) => {
+        handleNotification: async () => {
           const prefs = await this.getPreferences();
-          console.log('[NotificationService][Handler] Foreground handler checking preferences:', JSON.stringify(prefs));
-          console.log('[NotificationService][Handler] Incoming notification details:', JSON.stringify(notification));
-          
           return {
             shouldShowAlert: true,
             shouldPlaySound: prefs.soundEnabled,
@@ -108,166 +99,89 @@ class NotificationService {
           };
         },
       });
-      console.log('[NotificationService][Init] Foreground notification handler configured successfully.');
 
       // Configure Android channels
       if (Platform.OS === 'android') {
-        console.log('[NotificationService][Channel] Configuring Android notification channels...');
-        // 1. Default channel
-        try {
-          await Notifications.setNotificationChannelAsync('default', {
-            name: 'Alerts with Sound & Vibration',
-            importance: Notifications.AndroidImportance.MAX,
-            vibrationPattern: [0, 250, 250, 250],
-            lightColor: '#2563EB',
-            bypassDnd: true,
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-            sound: 'default',
-          });
-          console.log('[NotificationService][Channel] Default channel successfully created/updated.');
-        } catch (chErr) {
-          console.error('[NotificationService][Channel] Failed to configure default channel:', chErr);
-        }
+        // High importance channel with sound & vibration
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'Alerts with Sound & Vibration',
+          importance: Notifications.AndroidImportance.MAX,
+          sound: 'default',
+          enableVibrate: true,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#2563EB',
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
 
-        // 2. Silent channel
-        try {
-          await Notifications.setNotificationChannelAsync('silent', {
-            name: 'Silent Alerts',
-            importance: Notifications.AndroidImportance.MAX,
-            playSound: false,
-            enableVibration: false,
-            bypassDnd: true,
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-          });
-          console.log('[NotificationService][Channel] Silent channel successfully created/updated.');
-        } catch (chErr) {
-          console.error('[NotificationService][Channel] Failed to configure silent channel:', chErr);
-        }
-
-        // 3. Location Alerts channel (matching constants.ts CHANNEL_ID_ALERTS)
-        try {
-          await Notifications.setNotificationChannelAsync('location-alerts', {
-            name: 'Location Alerts',
-            importance: Notifications.AndroidImportance.MAX,
-            vibrationPattern: [0, 250, 250, 250],
-            lightColor: '#2563EB',
-            bypassDnd: true,
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-            sound: 'default',
-          });
-          console.log('[NotificationService][Channel] Location Alerts channel successfully created/updated.');
-        } catch (chErr) {
-          console.error('[NotificationService][Channel] Failed to configure location-alerts channel:', chErr);
-        }
-
-        // 4. Location Critical channel (matching constants.ts CHANNEL_ID_CRITICAL)
-        try {
-          await Notifications.setNotificationChannelAsync('location-critical', {
-            name: 'Critical Alerts',
-            importance: Notifications.AndroidImportance.MAX,
-            vibrationPattern: [0, 500, 250, 500],
-            lightColor: '#DC2626',
-            bypassDnd: true,
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-            sound: 'default',
-          });
-          console.log('[NotificationService][Channel] Location Critical channel successfully created/updated.');
-        } catch (chErr) {
-          console.error('[NotificationService][Channel] Failed to configure location-critical channel:', chErr);
-        }
-
-        // 5. Location Tracking channel (matching constants.ts CHANNEL_ID_TRACKING)
-        try {
-          await Notifications.setNotificationChannelAsync('location-tracking', {
-            name: 'Location Tracking',
-            importance: Notifications.AndroidImportance.LOW,
-            playSound: false,
-            enableVibration: false,
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.SECRET,
-          });
-          console.log('[NotificationService][Channel] Location Tracking channel successfully created/updated.');
-        } catch (chErr) {
-          console.error('[NotificationService][Channel] Failed to configure location-tracking channel:', chErr);
-        }
+        // High importance channel but silent (no sound, no vibration)
+        await Notifications.setNotificationChannelAsync('silent', {
+          name: 'Silent Alerts',
+          importance: Notifications.AndroidImportance.MAX,
+          sound: null,
+          enableVibrate: false,
+          bypassDnd: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
       }
 
       // 2. Request permissions
       const hasPermission = await this.requestPermissions();
       if (!hasPermission) {
-        console.log('[NotificationService][Init] Push notification permissions were denied.');
+        console.log('[NotificationService] Permissions not granted');
         return;
       }
-      console.log('[NotificationService][Init] Push notification permissions verified successfully.');
 
       // 3. Register device token
-      console.log('[NotificationService][Init] Resolving and registering device tokens...');
       await this.registerDevice();
 
       // 4. Listen to token refreshes
       Notifications.addPushTokenListener(async (token) => {
-        console.log('[NotificationService][Token] Push token rotated/refreshed by OS:', token.data);
+        console.log('[NotificationService] Push token rotated:', token.data);
         await this.saveTokenLocally(token.data);
         try {
-          console.log('[NotificationService][Token] Registering new rotated token to backend api...');
           await registerDeviceToken({
             deviceToken: token.data,
             deviceType: Platform.OS === 'ios' ? 'ios' : 'android',
           });
-          console.log('[NotificationService][Token] Rotated token registered successfully with backend.');
         } catch (err) {
-          console.error('[NotificationService][Token] Failed to register rotated token with backend:', err);
           captureSentryException(err, { tags: { area: 'notifications', op: 'token_rotate' } });
         }
       });
 
-      // 5. Add foreground message listener for TTS voice announcements and local display
+      // 5. Add foreground message listener for TTS voice announcements
       Notifications.addNotificationReceivedListener(async (notification) => {
-        console.log('[NotificationService][Received] Foreground notification event fired:', JSON.stringify(notification));
+        console.log('[NotificationService] Foreground notification received:', JSON.stringify(notification));
         const data = notification.request.content.data;
         const isLocal = data?.isLocal === true;
-        console.log('[NotificationService][Received] Notification isLocal flag:', isLocal);
 
         if (!isLocal) {
           const prefs = await this.getPreferences();
           const type = data?.type || '';
-          console.log('[NotificationService][Received] Loaded preferences:', JSON.stringify(prefs));
-          console.log('[NotificationService][Received] Notification type:', type);
           
           // Check if alerts for this type are enabled
           const isEnabled = this.isNotificationTypeEnabled(type, prefs);
-          console.log('[NotificationService][Received] Notification type status (enabled?):', isEnabled);
-          
           if (isEnabled) {
             // Schedule local notification to display in the notification bar
             const title = notification.request.content.title || data?.title || 'NavixGo';
             const body = notification.request.content.body || data?.body || data?.message || 'New update available';
             const voiceMessage = data?.voiceMessage || body;
             
-            const channelId = prefs.soundEnabled ? 'location-alerts' : 'silent';
-            console.log('[NotificationService][Received] Scheduling local notification. Channel:', channelId, 'Sound:', prefs.soundEnabled, 'Vibration:', prefs.vibrationEnabled);
+            const channelId = prefs.soundEnabled ? 'default' : 'silent';
 
-            // ONLY schedule local notification if the incoming notification is data-only (i.e. does not have a native notification body/title already shown)
-            const hasVisualContent = !!(notification.request.content.title || notification.request.content.body);
-            if (!hasVisualContent) {
-              try {
-                await Notifications.scheduleNotificationAsync({
-                  content: {
-                    title,
-                    body,
-                    sound: prefs.soundEnabled ? 'default' : undefined,
-                    vibrate: prefs.vibrationEnabled ? [0, 250, 250, 250] : undefined,
-                    channelId,
-                    data: { ...data, isLocal: true },
-                  },
-                  trigger: null,
-                });
-                console.log('[NotificationService][Received] Foreground local notification scheduled successfully.');
-              } catch (schErr) {
-                console.error('[NotificationService][Received] Failed to schedule local notification in foreground:', schErr);
-              }
-            } else {
-              console.log('[NotificationService][Received] Notification already has visual content, skipped duplicate local scheduling.');
-            }
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title,
+                body,
+                sound: prefs.soundEnabled ? 'default' : undefined,
+                data: { ...data, isLocal: true },
+              },
+              trigger: {
+                type: Notifications.SchedulableTriggerInputTypes.DATE,
+                date: new Date(),
+                channelId,
+              },
+            });
 
             // Speak voice message
             if (prefs.voiceEnabled) {
@@ -286,25 +200,18 @@ class NotificationService {
                 textToSpeak = translations.delayAlerts;
               }
 
-              console.log('[NotificationService][Received] TTS voice active. Text to speak:', textToSpeak);
               if (textToSpeak) {
                 await this.speak(textToSpeak);
               }
-            } else {
-              console.log('[NotificationService][Received] TTS voice is disabled in preferences. Skipping speech.');
             }
-          } else {
-            console.log('[NotificationService][Received] Notification category disabled by user preferences. Dropped.');
           }
-        } else {
-          console.log('[NotificationService][Received] Local loop prevention: Ignored local notification event.');
         }
       });
 
       this.isInitialized = true;
-      console.log('[NotificationService][Init] Completed initialization successfully.');
+      console.log('[NotificationService] Initialized successfully');
     } catch (error) {
-      console.error('[NotificationService][Init] Fatal exception during init:', error);
+      console.error('[NotificationService] Init failed:', error);
       captureSentryException(error, { tags: { area: 'notifications', op: 'init' } });
     }
   }
@@ -313,19 +220,12 @@ class NotificationService {
    * Request push notification permissions
    */
   async requestPermissions(): Promise<boolean> {
-    if (Platform.OS === 'web') {
-      console.log('[NotificationService][Permissions] Running on web platform. Bypassing permissions.');
-      return false;
-    }
+    if (Platform.OS === 'web') return false;
 
-    console.log('[NotificationService][Permissions] Fetching current permissions status...');
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    console.log('[NotificationService][Permissions] Existing permissions status is:', existingStatus);
-    
     let finalStatus = existingStatus;
 
     if (existingStatus !== 'granted') {
-      console.log('[NotificationService][Permissions] Permission not granted. Requesting notification permissions...');
       const { status } = await Notifications.requestPermissionsAsync({
         ios: {
           allowAlert: true,
@@ -338,7 +238,6 @@ class NotificationService {
       finalStatus = status;
     }
 
-    console.log('[NotificationService][Permissions] Final permission status is:', finalStatus);
     return finalStatus === 'granted';
   }
 
@@ -350,31 +249,36 @@ class NotificationService {
       if (Platform.OS === 'web') return;
 
       // 1. Generate and log Expo Push Token (if using Expo Push Service)
-      console.log('[NotificationService][Token] Initiating token generation...');
       try {
         const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
-        console.log('[NotificationService][Token] EAS Project ID resolved:', projectId);
         const expoPushTokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
-        console.log('[NotificationService][Token] SUCCESS - Generated Expo Push Token:', expoPushTokenResult.data);
+        console.log('[NotificationService] Generated Expo Push Token:', expoPushTokenResult.data);
       } catch (expoErr) {
-        console.warn('[NotificationService][Token] Expo Push Token generation failed/bypassed:', expoErr);
+        console.log('[NotificationService] Expo Push Token generation bypassed/failed:', expoErr);
       }
 
       // 2. Generate and log native device token (FCM for Android, APNs for iOS)
       const tokenResult = await Notifications.getDevicePushTokenAsync();
       const token = tokenResult.data;
 
-      console.log('[NotificationService][Token] SUCCESS - Generated FCM/APNs Native Device Token:', token);
+      console.log('[NotificationService] Generated FCM/APNs Device Token:', token);
       await this.saveTokenLocally(token);
 
-      console.log('[NotificationService][Token] Registering token with backend endpoint /api/notifications/register-device...');
+      // 3. Register via notifications endpoint
       await registerDeviceToken({
         deviceToken: token,
         deviceType: Platform.OS === 'ios' ? 'ios' : 'android',
       });
-      console.log('[NotificationService][Token] SUCCESS - Registered device token with backend api database.');
+
+      // 4. Also sync FCM token to user profile endpoint
+      try {
+        await patchUserFcmToken(String(token));
+        console.log('[NotificationService] FCM token synced to user profile');
+      } catch (profileErr) {
+        console.log('[NotificationService] FCM token profile sync failed (non-fatal):', profileErr);
+      }
     } catch (error) {
-      console.error('[NotificationService][Token] FAILED - Device token registration sequence crashed:', error);
+      console.error('[NotificationService] Device token registration failed:', error);
       captureSentryException(error, { tags: { area: 'notifications', op: 'register_device' } });
     }
   }
@@ -473,24 +377,32 @@ class NotificationService {
    * Announce voice message based on notification type and selected language
    */
   async announceByType(type: string): Promise<void> {
-    console.log('[NotificationService][announceByType] Triggered with type:', type);
     const prefs = await this.getPreferences();
     const lang = prefs.language;
     const translations = VOICE_TRANSLATIONS[lang] || VOICE_TRANSLATIONS.en;
     let message = '';
 
-    const normType = type.toUpperCase().replace(/_/g, '');
-    if (normType.includes('NEARSTOP')) {
-      message = translations.busNearStop;
-    } else if (normType.includes('ARRIVED') || normType.includes('ARRIVE')) {
-      message = translations.busArrived;
-    } else if (normType.includes('STARTED') || normType.includes('START')) {
-      message = translations.tripStarted;
-    } else if (normType.includes('DELAY')) {
-      message = translations.delayAlerts;
+    switch (type.toLowerCase()) {
+      case 'busnearstop':
+      case 'near_stop':
+        message = translations.busNearStop;
+        break;
+      case 'busarrived':
+      case 'arrived':
+        message = translations.busArrived;
+        break;
+      case 'tripstarted':
+      case 'trip_started':
+        message = translations.tripStarted;
+        break;
+      case 'delayalerts':
+      case 'delay':
+        message = translations.delayAlerts;
+        break;
+      default:
+        return;
     }
 
-    console.log('[NotificationService][announceByType] Message match:', message);
     if (message) {
       await this.speak(message);
     }
@@ -525,16 +437,19 @@ class NotificationService {
     }
 
     // Respect sound/vibration preferences in scheduled local notification
+    const testChannelId = prefs.soundEnabled ? 'default' : 'silent';
     await Notifications.scheduleNotificationAsync({
       content: {
         title,
         body,
         sound: prefs.soundEnabled ? 'default' : undefined,
-        vibrate: prefs.vibrationEnabled ? [0, 250, 250, 250] : undefined,
-        channelId: 'default',
         data: { voiceMessage, type },
       },
-      trigger: null,
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: new Date(),
+        channelId: testChannelId,
+      },
     });
 
     // Voice announcement immediately
