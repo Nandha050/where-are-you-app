@@ -305,28 +305,28 @@ export const NotificationSettingsScreen: React.FC = () => {
                 <SectionHeader title="Transit Alerts" />
                 <View style={{ marginHorizontal: 16, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: PALETTE.borderSlate, overflow: "hidden" }}>
                     <SettingRow
-                        icon={<Feather name="bell" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="bell" size={20} color={PALETTE.primaryBlue} />}
                         title="Bus Near My Stop"
                         description="Get notified when your bus is approaching your stop."
                         value={prefs.busNearStopEnabled}
                         onToggle={(val) => updatePreference('busNearStopEnabled', val)}
                     />
                     <SettingRow
-                        icon={<Feather name="check-circle" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="check-circle" size={20} color={PALETTE.primaryBlue} />}
                         title="Bus Arrived"
                         description="Receive an alert when the bus reaches your stop."
                         value={prefs.busArrivedEnabled}
                         onToggle={(val) => updatePreference('busArrivedEnabled', val)}
                     />
                     <SettingRow
-                        icon={<Feather name="play" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="play" size={20} color={PALETTE.primaryBlue} />}
                         title="Trip Started"
                         description="Get notified when your bus begins its journey."
                         value={prefs.tripStartedEnabled}
                         onToggle={(val) => updatePreference('tripStartedEnabled', val)}
                     />
                     <SettingRow
-                        icon={<Feather name="alert-triangle" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="alert-triangle" size={20} color={PALETTE.primaryBlue} />}
                         title="Delay Alerts"
                         description="Stay informed if the bus is delayed or off schedule."
                         value={prefs.delayAlertsEnabled}
@@ -338,7 +338,7 @@ export const NotificationSettingsScreen: React.FC = () => {
                 <SectionHeader title="Sound & Feedback" />
                 <View style={{ marginHorizontal: 16, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: PALETTE.borderSlate, overflow: "hidden" }}>
                     <SettingRow
-                        icon={<Feather name="volume-2" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="volume-2" size={20} color={PALETTE.primaryBlue} />}
                         title="Sound"
                         description="Play sound notifications for bus updates."
                         value={prefs.soundEnabled}
@@ -357,7 +357,7 @@ export const NotificationSettingsScreen: React.FC = () => {
                 <SectionHeader title="Voice Announcements" />
                 <View style={{ marginHorizontal: 16, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: PALETTE.borderSlate, overflow: "hidden", paddingBottom: 16 }}>
                     <SettingRow
-                        icon={<Feather name="mic" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="mic" size={20} color={PALETTE.primaryBlue} />}
                         title="Voice Notifications"
                         description="Speak real-time bus alerts out loud (TTS)."
                         value={prefs.voiceEnabled}
@@ -409,7 +409,7 @@ export const NotificationSettingsScreen: React.FC = () => {
                 <SectionHeader title="Advanced Settings" />
                 <View style={{ marginHorizontal: 16, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: PALETTE.borderSlate, overflow: "hidden", paddingBottom: 16 }}>
                     <SettingRow
-                        icon={<Feather name="clock" size={20} color="#E2E8F0" style={{ tintColor: PALETTE.primaryBlue }} />}
+                        icon={<Feather name="clock" size={20} color={PALETTE.primaryBlue} />}
                         title="Alert Before Arrival"
                         description="Notify me a specified number of minutes before arrival."
                         value={prefs.alertBeforeArrivalEnabled}
