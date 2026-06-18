@@ -30,6 +30,9 @@ import {
 
 type LocationUpdateCallback = (location: LocationUpdate) => void;
 
+// Preset name type for tracking transitions
+type PresetName = 'stationary' | 'city' | 'highway' | 'lowBattery' | 'offline' | null;
+
 /**
  * Core location service
  * Singleton instance manages all location tracking
@@ -47,6 +50,9 @@ class LocationServiceClass implements ILocationService {
     private updateCallbacks = new Set<LocationUpdateCallback>();
     private errors: LocationError[] = [];
     private batteryLevel = 100;
+
+    // ✅ Track current adaptive preset to detect transitions and restart watch
+    private currentPresetName: PresetName = null;
 
     // Prevent duplicate instantiation
     private constructor() { }
@@ -374,6 +380,10 @@ class LocationServiceClass implements ILocationService {
     /**
      * Adapt tracking parameters based on speed and battery
      * Reduces battery drain while maintaining reasonable accuracy
+     *
+     * ✅ FIX: When preset changes we MUST restart watchPositionAsync with the
+     * new options. Simply mutating `this.config` after the watch has already
+     * started has no effect — Expo does not live-update a running subscription.
      */
     private adaptivelyAdjustTracking(): void {
         try {
@@ -381,31 +391,82 @@ class LocationServiceClass implements ILocationService {
                 return;
             }
 
-            let preset = ADAPTIVE_TRACKING_PRESETS.city; // Default
+            let preset = ADAPTIVE_TRACKING_PRESETS.city;
+            let presetName: PresetName = 'city';
 
             // Check battery first
             if (this.batteryLevel < this.config.lowBatteryModeThreshold) {
                 preset = ADAPTIVE_TRACKING_PRESETS.lowBattery;
+                presetName = 'lowBattery';
             }
             // Then check speed
             else if (this.currentLocation.speed < 1.4) {
                 // < 5 km/h
                 preset = ADAPTIVE_TRACKING_PRESETS.stationary;
+                presetName = 'stationary';
             } else if (this.currentLocation.speed > 11.1) {
                 // > 40 km/h
                 preset = ADAPTIVE_TRACKING_PRESETS.highway;
+                presetName = 'highway';
             }
-            // else use city preset (already set)
+            // else city (already set)
 
-            // Update if different from current config
-            if (this.config.foregroundTimeInterval !== preset.timeInterval) {
-                this.config.foregroundTimeInterval = preset.timeInterval;
-                this.config.foregroundDistanceInterval = preset.distanceInterval;
+            // Only act if preset actually changed
+            if (this.currentPresetName === presetName) {
+                return;
+            }
 
-                logger.debug('[LocationService] Adapted tracking', {
-                    preset: preset.reason,
+            const previousPreset = this.currentPresetName;
+            this.currentPresetName = presetName;
+
+            // ✅ DIAGNOSTIC LOG — required for production debugging
+            logger.warn('[ADAPTIVE] PRESET_CHANGE', {
+                previousPreset,
+                newPreset: presetName,
+                speed: this.currentLocation.speed,
+                battery: this.batteryLevel,
+                timeInterval: preset.timeInterval,
+                distanceInterval: preset.distanceInterval,
+            });
+
+            // ✅ MOVEMENT STATE LOG — stationary ↔ moving transitions
+            const wasStationary = previousPreset === 'stationary';
+            const isNowStationary = presetName === 'stationary';
+            if (wasStationary !== isNowStationary) {
+                const previousState = wasStationary ? 'stationary' : 'moving';
+                const newState = isNowStationary ? 'stationary' : 'moving';
+                logger.warn('[MOVEMENT] STATE_CHANGE', {
+                    previousState,
+                    newState,
                     speed: this.currentLocation.speed,
-                    battery: this.batteryLevel,
+                    presetName,
+                });
+            }
+
+            // Update config
+            this.config.foregroundTimeInterval = preset.timeInterval;
+            this.config.foregroundDistanceInterval = preset.distanceInterval;
+
+            // ✅ FIX: Restart the watch subscription with new parameters.
+            // The old watchPositionAsync keeps its original options — we must
+            // stop it and start a fresh one with the updated intervals.
+            if (this.watchSubscription) {
+                this.watchSubscription.remove();
+                this.watchSubscription = null;
+
+                // Re-start asynchronously (can't await in a sync function)
+                void this.startWatchingLocation().then((success) => {
+                    if (!success) {
+                        logger.error('[LocationService] Failed to restart watch after preset change', {
+                            presetName,
+                        });
+                    } else {
+                        logger.info('[LocationService] Watch restarted for new preset', {
+                            presetName,
+                            timeInterval: preset.timeInterval,
+                            distanceInterval: preset.distanceInterval,
+                        });
+                    }
                 });
             }
         } catch (error) {

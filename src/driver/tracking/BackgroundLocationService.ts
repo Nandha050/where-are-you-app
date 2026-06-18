@@ -2,7 +2,7 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { type AppStateStatus, Platform } from 'react-native';
-import { ANDROID_CONFIG, BACKGROUND_LOCATION_TASK_NAME } from '../../config/constants';
+import { ANDROID_CONFIG, BACKGROUND_LOCATION_TASK_NAME, LOCATION_WATCHDOG_TIMEOUT_MS } from '../../config/constants';
 import { logger } from '../../core/logger/logger';
 import { locationQueueManager, type LocationRecord } from '../queue/LocationQueueManager';
 import { httpSyncManager } from '../sync/HTTPSyncManager';
@@ -27,6 +27,10 @@ export class BackgroundLocationService {
     private isLowBattery = false;
     private appState: AppStateStatus = 'active';
     private batteryCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+    // ✅ Stationary watchdog: detects stalled location updates and forces recovery
+    private locationWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+    private lastLocationReceivedAt: number | null = null;
 
     private constructor() { }
 
@@ -113,7 +117,11 @@ export class BackgroundLocationService {
             await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK_NAME, {
                 accuracy: config.accuracy,
                 timeInterval: config.intervalMs,
-                distanceInterval: config.minDistanceMeters,
+                // ✅ FIX: distanceInterval 0 = fire on every timeInterval tick.
+                // NEVER use a non-zero distanceInterval here — it prevents the OS
+                // from waking the background task until the bus has moved that far,
+                // which is exactly the freeze bug we are fixing.
+                distanceInterval: 0,
                 showsBackgroundLocationIndicator: true,
                 foregroundService: {
                     notificationTitle: ANDROID_CONFIG.FOREGROUND_SERVICE_NOTIFICATION.title,
@@ -122,6 +130,9 @@ export class BackgroundLocationService {
                     killServiceOnDestroy: false,
                 },
             });
+
+            // ✅ Start the stationary safety watchdog
+            this.startLocationWatchdog();
 
             this.isRunning = true;
             logger.info('[BackgroundLocationService] Started', {
@@ -146,8 +157,9 @@ export class BackgroundLocationService {
 
             logger.info('[BackgroundLocationService] Stop requested');
 
-            // ✅ Stop battery monitoring
+            // ✅ Stop battery monitoring and watchdog
             this.stopBatteryMonitoring();
+            this.stopLocationWatchdog();
 
             // Stop background task
             const isTaskDefined = TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK_NAME);
@@ -165,6 +177,7 @@ export class BackgroundLocationService {
             }
 
             this.isRunning = false;
+            this.lastLocationReceivedAt = null;
             logger.info('[BackgroundLocationService] Stopped');
         } catch (error) {
             logger.error('[BackgroundLocationService] Failed to stop', { error });
@@ -247,6 +260,9 @@ export class BackgroundLocationService {
      */
     private async handleLocationUpdate(location: Location.LocationObject): Promise<void> {
         try {
+            // ✅ Update watchdog timestamp on every received location
+            this.lastLocationReceivedAt = Date.now();
+
             const record: LocationRecord = {
                 latitude: location.coords.latitude,
                 longitude: location.coords.longitude,
@@ -268,13 +284,15 @@ export class BackgroundLocationService {
             const enqueued = await locationQueueManager.enqueue(record);
 
             if (enqueued) {
-                logger.info('[BackgroundLocationService] Location queued', {
+                // ✅ DIAGNOSTIC LOG — required
+                logger.warn('[QUEUE] LOCATION_ENQUEUED', {
                     lat: record.latitude,
                     lng: record.longitude,
+                    speed: record.speed,
                     queueAfter: locationQueueManager.size(),
                 });
             } else {
-                logger.warn('[BackgroundLocationService] Location was not queued', {
+                logger.warn('[BackgroundLocationService] Location was not queued (duplicate)', {
                     lat: record.latitude,
                     lng: record.longitude,
                 });
@@ -297,6 +315,16 @@ export class BackgroundLocationService {
             queueBefore: locationQueueManager.size(),
         });
 
+        // ✅ DIAGNOSTIC LOG
+        const latest = locations[locations.length - 1];
+        logger.warn('[BG_TASK] LOCATION_RECEIVED', {
+            latitude: latest.coords.latitude,
+            longitude: latest.coords.longitude,
+            speed: latest.coords.speed,
+            timestamp: new Date(latest.timestamp).toISOString(),
+            batchSize: locations.length,
+        });
+
         await locationQueueManager.initialize();
         if (typeof httpSyncManager.restoreIdentifiersFromStorage === 'function') {
             await httpSyncManager.restoreIdentifiersFromStorage();
@@ -305,6 +333,11 @@ export class BackgroundLocationService {
         for (const location of locations) {
             await this.handleLocationUpdate(location);
         }
+
+        // ✅ DIAGNOSTIC LOG
+        logger.warn('[SYNC] LOCATION_SYNC_TRIGGERED', {
+            queueSize: locationQueueManager.size(),
+        });
 
         logger.info('[BackgroundLocationService] Upload triggered from background task', {
             queueSize: locationQueueManager.size(),
@@ -332,15 +365,18 @@ export class BackgroundLocationService {
      */
     private getAdaptiveConfig(): BackgroundTrackingConfig {
         // ✅ Low battery mode: Reduced accuracy, longer intervals
+        // CRITICAL: minDistanceMeters MUST be 0 — the caller hardcodes distanceInterval:0
+        // in startLocationUpdatesAsync so this field is not used for the OS call, but
+        // we keep it 0 here to prevent future regressions if the call site changes.
         if (this.isLowBattery) {
             logger.debug('[BackgroundLocationService] Using low battery config', {
                 batteryLevel: Math.round(this.currentBatteryLevel * 100) + '%',
             });
             return {
                 accuracy: Location.Accuracy.Balanced, // Medium accuracy
-                intervalMs: 30000, // 30 seconds (normal: 10 seconds)
-                minDistanceMeters: 20, // Only update if moved 20+ meters (normal: 10)
-                syncIntervalMs: 30000, // 30 seconds (normal: 15 seconds)
+                intervalMs: 30000, // 30 seconds
+                minDistanceMeters: 0, // MUST be 0 — see distanceInterval note above
+                syncIntervalMs: 30000, // 30 seconds
             };
         }
 
@@ -352,7 +388,7 @@ export class BackgroundLocationService {
             return {
                 accuracy: Location.Accuracy.Balanced,
                 intervalMs: 60000, // 60 seconds
-                minDistanceMeters: 50, // Only update if moved 50+ meters
+                minDistanceMeters: 0, // MUST be 0 — see distanceInterval note above
                 syncIntervalMs: 60000, // 60 seconds
             };
         }
@@ -360,9 +396,9 @@ export class BackgroundLocationService {
         // ✅ Normal mode: Full accuracy, standard intervals
         return {
             accuracy: Location.Accuracy.High,
-            intervalMs: 5000,  // 5 second base interval (was 10s — faster for real-time tracking)
+            intervalMs: 5000,  // 5 second base interval
             minDistanceMeters: 0, // 0 = fire on every timeInterval regardless of movement
-            syncIntervalMs: 15000, // 15 seconds (standard)
+            syncIntervalMs: 15000, // 15 seconds
         };
     }
 
@@ -395,6 +431,70 @@ export class BackgroundLocationService {
             clearInterval(this.batteryCheckInterval);
             this.batteryCheckInterval = null;
             logger.info('[BackgroundLocationService] Battery monitoring stopped');
+        }
+    }
+
+    /**
+     * ✅ Stationary safety watchdog
+     *
+     * Runs on a 20-second interval while tracking is active.
+     * If no location has been received within LOCATION_WATCHDOG_TIMEOUT_MS
+     * (25 s), it forces a getCurrentPositionAsync() call to break any OS-level
+     * location stall and immediately resumes normal update cadence.
+     *
+     * This is the last line of defence against Android coalescing or deferring
+     * background location updates while the bus is parked.
+     */
+    private startLocationWatchdog(): void {
+        if (this.locationWatchdogInterval) {
+            clearInterval(this.locationWatchdogInterval);
+        }
+
+        this.lastLocationReceivedAt = Date.now();
+
+        this.locationWatchdogInterval = setInterval(() => {
+            if (!this.isRunning) return;
+
+            const now = Date.now();
+            const lastReceived = this.lastLocationReceivedAt ?? 0;
+            const silenceDurationMs = now - lastReceived;
+
+            if (silenceDurationMs > LOCATION_WATCHDOG_TIMEOUT_MS) {
+                logger.warn('[BackgroundLocationService] WATCHDOG: No location received for ' + silenceDurationMs + 'ms — forcing recovery', {
+                    silenceDurationMs,
+                    watchdogThresholdMs: LOCATION_WATCHDOG_TIMEOUT_MS,
+                });
+
+                // Force an immediate location poll to break the stall
+                void Location.getCurrentPositionAsync({
+                    accuracy: Location.Accuracy.High,
+                }).then((loc) => {
+                    logger.warn('[BackgroundLocationService] WATCHDOG: Recovery location obtained', {
+                        lat: loc.coords.latitude,
+                        lng: loc.coords.longitude,
+                        speed: loc.coords.speed,
+                    });
+                    void this.handleLocationUpdate(loc);
+                }).catch((err) => {
+                    logger.error('[BackgroundLocationService] WATCHDOG: Recovery failed', { error: err });
+                });
+            }
+        }, 20000); // Poll watchdog every 20 seconds
+
+        logger.info('[BackgroundLocationService] Location watchdog started', {
+            checkIntervalMs: 20000,
+            timeoutMs: LOCATION_WATCHDOG_TIMEOUT_MS,
+        });
+    }
+
+    /**
+     * ✅ Stop the stationary safety watchdog
+     */
+    private stopLocationWatchdog(): void {
+        if (this.locationWatchdogInterval) {
+            clearInterval(this.locationWatchdogInterval);
+            this.locationWatchdogInterval = null;
+            logger.info('[BackgroundLocationService] Location watchdog stopped');
         }
     }
 

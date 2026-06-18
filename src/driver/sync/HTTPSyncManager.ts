@@ -280,6 +280,14 @@ export class HTTPSyncManager {
      * Perform one sync cycle
      */
     async sync(): Promise<boolean> {
+        // \u2705 DIAGNOSTIC LOG \u2014 required for production debugging
+        logger.warn('[SYNC] LOCATION_SYNC_TRIGGERED', {
+            queueSize: locationQueueManager.size(),
+            hasDriverId: !!this.driverId,
+            hasBusId: !!this.busId,
+            hasTripId: !!this.tripId,
+        });
+
         // Check backoff delay
         if (this.backoffState.nextRetryMs > Date.now()) {
             const waitMs = this.backoffState.nextRetryMs - Date.now();

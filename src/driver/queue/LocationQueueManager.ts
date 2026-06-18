@@ -87,6 +87,16 @@ export class LocationQueueManager {
             }
 
             await this.persist();
+
+            // \u2705 DIAGNOSTIC LOG \u2014 required for production debugging
+            logger.warn('[QUEUE] LOCATION_ENQUEUED', {
+                lat: location.latitude,
+                lng: location.longitude,
+                speed: location.speed,
+                queueSize: this.queue.length,
+                timestamp: location.timestamp,
+            });
+
             return true;
         } catch (error) {
             logger.error('[LocationQueueManager] Enqueue failed', { error });
