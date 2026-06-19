@@ -10,8 +10,5 @@
 # react-native-reanimated
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
--keep class com.google.firebase.** { *; }
--keep class com.google.android.gms.** { *; }
--keep class android.speech.tts.** { *; }
 
 # Add any project specific keep options here:
