@@ -46,6 +46,7 @@ app-example
 
 # generated native folders
 /ios
-
-
 .env.local
+
+# Android build secrets
+/android/app/src/main/res/values/secrets.xml
