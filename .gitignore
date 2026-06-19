@@ -37,7 +37,6 @@ yarn-error.*
 .env*.local
 
 
-service-account.json
 
 
 # typescript
@@ -47,6 +46,6 @@ app-example
 
 # generated native folders
 /ios
-/android
+
 
 .env.local
