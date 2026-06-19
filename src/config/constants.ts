@@ -92,14 +92,22 @@ export const DEFAULT_TRACKING_CONFIG: TrackingConfig = {
 /**
  * Adaptive tracking presets based on speed
  * Used to optimize battery/accuracy tradeoff
+ *
+ * ⚠️  STATIONARY SAFETY RULE:
+ * distanceInterval MUST be 0 in stationary preset.
+ * A non-zero distanceInterval blocks the OS from firing ANY update until the
+ * bus has moved that many metres — making movement-resumption detection
+ * impossible while backgrounded. Use timeInterval as the only gate instead.
  */
 export const ADAPTIVE_TRACKING_PRESETS = {
     stationary: {
         // Speed 0-5 km/h - Stationary or very slow
-        timeInterval: 30000, // 30 seconds
-        distanceInterval: 50, // 50 meters
-        accuracy: 'Balanced' as const,
-        reason: 'Stationary - optimize battery' as const,
+        // CRITICAL: distanceInterval MUST be 0 — never set a distance gate
+        // here or the OS will not fire when the bus first starts moving again.
+        timeInterval: 15000,  // 15 seconds — minimum heartbeat while parked
+        distanceInterval: 0,  // 0 = fire on every timeInterval tick regardless of movement
+        accuracy: 'High' as const, // High keeps GPS warm so resumption is instant
+        reason: 'Stationary - heartbeat mode' as const,
     },
     city: {
         // Speed 5-40 km/h - City driving
@@ -117,19 +125,34 @@ export const ADAPTIVE_TRACKING_PRESETS = {
     },
     lowBattery: {
         // Battery <10% - Battery saver mode
-        timeInterval: 60000, // 60 seconds
-        distanceInterval: 100, // 100 meters
+        // CRITICAL: even in low battery, maintain heartbeat for movement detection
+        timeInterval: 30000,  // 30 seconds (was 60)
+        distanceInterval: 0,  // 0 = fire on every tick (was 100m — would break recovery)
         accuracy: 'Balanced' as const,
         reason: 'Low battery mode' as const,
     },
     offline: {
         // No network - Minimize power consumption
-        timeInterval: 30000, // 30 seconds
-        distanceInterval: 50, // 50 meters
+        // CRITICAL: distanceInterval 0 — same reasoning as stationary
+        timeInterval: 30000,  // 30 seconds
+        distanceInterval: 0,  // 0 = fire on every tick (was 50m)
         accuracy: 'Balanced' as const,
         reason: 'Offline - battery preservation' as const,
     },
 };
+
+/**
+ * Minimum heartbeat interval for background location while stationary.
+ * The background task and watchdog use this as the floor — we must receive
+ * at least one location update per this interval even when the bus is parked.
+ */
+export const STATIONARY_HEARTBEAT_INTERVAL_MS = 15000; // 15 seconds
+
+/**
+ * How long to wait without a location update before the watchdog forces a
+ * getCurrentPositionAsync() recovery call.
+ */
+export const LOCATION_WATCHDOG_TIMEOUT_MS = 25000; // 25 seconds
 
 // ============================================================================
 // PLATFORM-SPECIFIC CONFIGURATION

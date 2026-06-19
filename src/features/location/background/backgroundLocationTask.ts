@@ -38,6 +38,11 @@ import {
 
 let lastHandledLocationCache: LastHandledLocation | null = null;
 
+// ✅ Track stationary state so we can detect movement resumption
+// and never suppress the first update after the bus starts moving.
+let lastStationaryTimestamp: number | null = null;
+const STATIONARY_SPEED_THRESHOLD = 0.5; // m/s — below this = stationary
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -196,6 +201,11 @@ async function writeLastHandledLocation(
 /**
  * Determine if location should be processed
  * Uses duplicate detection based on distance + time
+ *
+ * ✅ FIX: Never suppress locations when movement resumes after stationary.
+ * Previously the first location updates after a bus stop were dropped because
+ * they were <5m from the cached stop position, making the passenger map appear
+ * frozen even after the bus started moving.
  */
 async function shouldSkipLocation(
     current: LocationPayload
@@ -217,6 +227,30 @@ async function shouldSkipLocation(
 
     const minDistance = DEFAULT_TRACKING_CONFIG.minDistanceBetweenLocationsM;
     const minTime = DEFAULT_TRACKING_CONFIG.minTimeBetweenLocationsSec * 1000;
+
+    // ✅ FIX: If the device is reporting non-zero speed after a stationary
+    // period, this is a resumption event. Always pass it through so the
+    // passenger sees the bus start moving immediately.
+    const isMoving = (current.speed ?? 0) > STATIONARY_SPEED_THRESHOLD;
+    const wasStationary = lastStationaryTimestamp !== null;
+
+    if (isMoving && wasStationary) {
+        console.log('[BG_TASK] Movement resumed after stationary — forcing location through', {
+            speed: current.speed,
+            stationaryDurationMs: Date.now() - (lastStationaryTimestamp ?? Date.now()),
+        });
+        lastStationaryTimestamp = null;
+        return false; // Never skip on movement resumption
+    }
+
+    // Track stationary state
+    if (!isMoving) {
+        if (lastStationaryTimestamp === null) {
+            lastStationaryTimestamp = Date.now();
+        }
+    } else {
+        lastStationaryTimestamp = null;
+    }
 
     return distance < minDistance && timeDelta < minTime;
 }
@@ -363,7 +397,7 @@ TaskManager.defineTask(
     async ({ data, error }: any) => {
         try {
             if (error) {
-                console.error('[BackgroundTask] Task error:', error);
+                console.error('[BG_TASK] Task error:', error);
                 return;
             }
 
@@ -372,29 +406,34 @@ TaskManager.defineTask(
             };
 
             if (!locations || locations.length === 0) {
-                console.log('[BackgroundTask] No locations received');
+                console.log('[BG_TASK] No locations received in task payload');
                 return;
             }
 
             // Get latest location
             const latestRaw = locations[locations.length - 1];
-            console.log('[BackgroundTask] Received location:', {
-                lat: latestRaw.coords.latitude,
-                lng: latestRaw.coords.longitude,
+
+            // ✅ DIAGNOSTIC LOG — required for production debugging
+            console.warn('[BG_TASK] LOCATION_RECEIVED', {
+                latitude: latestRaw.coords.latitude,
+                longitude: latestRaw.coords.longitude,
+                speed: latestRaw.coords.speed,
                 accuracy: latestRaw.coords.accuracy,
+                timestamp: new Date(latestRaw.timestamp).toISOString(),
+                totalBatch: locations.length,
             });
 
             // Check if tracking enabled
             const trackingEnabled = await getStoredValue(STORAGE_KEYS.TRACKING_ENABLED);
             if (trackingEnabled !== 'true') {
-                console.log('[BackgroundTask] Tracking disabled, skipping');
+                console.log('[BG_TASK] Tracking disabled, skipping');
                 return;
             }
 
             // Normalize location
             const location = normalizeLocation(latestRaw);
             if (!location) {
-                console.warn('[BackgroundTask] Failed to normalize location');
+                console.warn('[BG_TASK] Failed to normalize location');
                 return;
             }
 
@@ -405,7 +444,7 @@ TaskManager.defineTask(
 
             // Check for duplicates
             if (await shouldSkipLocation(location)) {
-                console.log('[BackgroundTask] Skipping duplicate location');
+                console.log('[BG_TASK] Skipping duplicate location (distance+time threshold)');
                 return;
             }
 
@@ -416,6 +455,20 @@ TaskManager.defineTask(
                 heading: location.heading,
                 speed: location.speed,
                 timestamp: new Date(location.timestamp).getTime(),
+            });
+
+            // ✅ DIAGNOSTIC LOG — enqueue
+            console.warn('[QUEUE] LOCATION_ENQUEUED', {
+                latitude: location.latitude,
+                longitude: location.longitude,
+                speed: location.speed,
+                tripId: location.tripId,
+            });
+
+            // ✅ DIAGNOSTIC LOG — sync triggered
+            console.warn('[SYNC] LOCATION_SYNC_TRIGGERED', {
+                latitude: location.latitude,
+                longitude: location.longitude,
             });
 
             // Try to send immediately
@@ -429,7 +482,7 @@ TaskManager.defineTask(
             // Attempt to flush any queued items
             await flushQueue();
         } catch (err) {
-            console.error('[BackgroundTask] Fatal error:', err);
+            console.error('[BG_TASK] Fatal error:', err);
         }
     }
 );
