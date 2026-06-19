@@ -56,7 +56,7 @@ export default {
       ],
       config: {
         googleMaps: {
-          apiKey: GOOGLE_MAPS_API_KEY,
+          apiKey: "${googleMapsApiKey}",
         },
       },
     },
